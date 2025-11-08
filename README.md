@@ -43,12 +43,5 @@ This repository contains code and analysis pipelines for:
 ## Installation
 
 ```bash
-# Clone repository
-git clone https://github.com/yourusername/HTRS-LUAD-SCLC.git
-cd HTRS-LUAD-SCLC
-
-# Install required R packages
-Rscript install_dependencies.R
-
-# Or install manually
+# install manually
 install.packages(c("Seurat", "SCENIC", "GSVA", "AUCell", "monocle", "pheatmap", "survival", "ggplot2"))
