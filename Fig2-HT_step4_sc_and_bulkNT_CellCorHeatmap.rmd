@@ -1,0 +1,119 @@
+---
+title: "Fig3_step3_sc_and_bulkNT_CellCorHeatmap"
+author: "tang"
+date: "2025-07-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = here::here())
+```
+
+1. 加载必要的包，设置路径
+```{r}
+library(Seurat)
+library(edgeR)
+library(limma)
+library(dplyr)
+library(SCP)
+library(ggplot2)
+output_1 <- '4_sc_and_bulkNT_CellCorHeatmap'
+dir.create(output_1)
+```
+
+2. 读取bulk数据，进行标准化，生成seurat对象
+```{r}
+#2.1 读取数据
+counts_matrix <- read.csv("1_NTbulkdata_E-MTAB-10399/GeneCounts_new.csv", row.names = 1, header = TRUE, sep = ",", quote = "\"")
+metadata_df <- read.csv('1_NTbulkdata_E-MTAB-10399/metadata_all_48samples_sorted.csv', row.names = 1, header = TRUE, sep = ",", quote = "\"")
+
+#2.2. Bulk RNA-seq 数据的标准化处理
+# 方法1：TMM 标准化（EdgeR推荐）
+dge <- DGEList(counts = counts_matrix, 
+               samples = metadata_df)
+
+# 过滤低表达基因
+keep <- filterByExpr(dge)
+dge <- dge[keep, , keep.lib.sizes=FALSE]
+
+# TMM 标准化
+dge <- calcNormFactors(dge, method = "TMM")
+
+# 转换为 log2 CPM
+log2_cpm <- cpm(dge, log = TRUE, prior.count = 1)
+
+#2.3 创建 Seurat 对象
+seurat_obj <- CreateSeuratObject(
+  counts = log2_cpm,          # 使用 log2 CPM 标准化后的数据
+  project = "Bulk_RNA",       # 项目名称
+  meta.data = metadata_df     # 添加 metadata 信息
+)
+
+# 2.4 基因名清理函数
+clean_gene_names <- function(genes) {
+  # 删除 -AS1, -AS2 等后缀
+  cleaned_genes <- sub("-AS\\d+$", "", genes)
+  return(cleaned_genes)
+}
+
+# 2.5 更新基因名
+update_gene_names <- function(obj) {
+  # 获取所有 assay 名称
+  assay_names <- names(obj@assays)
+  for (assay in assay_names) {
+    # 对每个 assay 更新基因名
+    rownames(obj@assays[[assay]]@counts) <- clean_gene_names(rownames(obj@assays[[assay]]@counts))
+    rownames(obj@assays[[assay]]@data) <- clean_gene_names(rownames(obj@assays[[assay]]@data))
+  }
+  return(obj)
+}
+
+# 2.6 更新数据gene名称
+seurat_obj <- update_gene_names(seurat_obj)
+```
+
+3 加载单细胞数据
+```{r}
+sce <- qs::qread('../Fig2_sc_human/7_13regulon_monocle2/7_13regulonsAUCell_aftermonocle2_filtered_28589_epi_state_AT2_LUAD_SCLC_epi_HLCA_HTAN_LuCA_GSE131907.qs')
+
+DefaultAssay(sce) <- 'RNA'
+
+# 更新单细胞数据基因名
+sce <- update_gene_names(sce)
+```
+
+4 找出bulk和scRNA数据的公共基因
+```{r}
+common_features <- intersect(rownames(sce), rownames(seurat_obj))
+length(common_features)
+```
+
+```{r}
+seurat_obj$group <- factor(seurat_obj$group,levels = c("C_LUAD", "T_LUAD", "T_SCLC", "C_SCLC"))
+sce$epi_state <- factor(sce$epi_state,levels = c("Normal_state1","LUAD_state2",  "LUAD_state3", "SCLC_state3"))
+```
+
+5 绘制热图http://guotosky.vip:13023/graphics/plot_zoom_png?width=428&height=303
+```{r}
+ht <- CellCorHeatmap(
+  srt_query = sce,
+  srt_ref = seurat_obj,
+  query_group = "epi_state",
+  ref_group = "group",
+  features = common_features,
+  label_cutoff = 0.55,
+  nlabel = 4,
+  label_size = 12,
+  height = 4,
+  width = 4,
+  #label_by = "row",
+  column_names_rot = 30,
+  row_names_rot = 60,
+  show_row_names = TRUE,
+  show_column_names = TRUE
+)
+print(ht$plot)
+ggsave(file.path(output_1,'CellCorHeatmap_sc_and_bulkNT.pdf'),ht$plot, width = 6, height =6)
+```
+
+

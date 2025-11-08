@@ -1,0 +1,369 @@
+---
+title: "Fig2_step4_AT2_LUAD_SCLC_13regulon"
+author: "tang"
+date: "2025-07-02"
+output: html_document
+---
+**JN的FDG整合方法不行，可能是细胞数太多了，好丑**
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = here::here())
+```
+
+接Fig2_step3_integration_analysis_250702.rmd 继续运行，分脚本，避免内容过多无法加载，引起程序崩溃。
+
+**以下分群都是AT2、LUAD、SCLC**
+1 加载数据，整合
+1.1 设置工作路径，及基本的路径名称
+```{r}
+#设置工作目录
+output_4 <- '4_AT2_LUAD_SCLC'
+dir.create(output_4)
+
+Rscripts_dir <- '/home/data/tmh_project/SCLC/Fig2_sc_human/Fig2_Rscripts/'
+sce <- qs::qread('3_integration/4_AT2_LUAD_SCLC_29127_epi_HLCA_HTAN_LuCA_GSE131907.qs')
+```
+
+1.2 加载R包 
+```{r}
+library(Seurat)
+library(tidyverse)
+library(scutilsR)
+library(harmony)
+library(SCP)
+library(dplyr)
+```
+
+1.3 标准化、归一化、找高变基因
+```{r}
+set.seed(123)
+sce <- sce %>%
+  NormalizeData() %>%
+  FindVariableFeatures(nfeatures = 2000) %>%
+  ScaleData() %>%
+  RunPCA(npcs =30)
+```
+
+1.4 harmony的方法进行整合，选定合适umap参数，重新运行单独保存seurat对象。
+```{r}
+set.seed(123)
+seu_harmony <- sce %>%
+  RunHarmony(group.by.vars = c('sample'), reduction.use = "pca", dims.use = 1:30) %>%
+  RunUMAP(reduction = "harmony", dims = 1:30,n.neighbors =50, min.dist=0.5) %>% 
+  FindNeighbors(reduction = "harmony", dims = 1:30) %>%
+  FindClusters(resolution =  seq(0.1,0.5,0.1))
+seu_harmony$disease <- factor(seu_harmony$disease,levels = c( "Normal", "LUAD","SCLC"))
+qs::qsave(seu_harmony,file.path(output_4,'4_harmony_n50d05_AT2_LUAD_SCLC_29127_epi_HLCA_HTAN_LuCA_GSE131907.qs'))
+```
+
+1.5 绘制相应的umap图
+```{r}
+c1 <- CellDimPlot(seu_harmony, group.by = "RNA_snn_res.0.1", 
+                  reduction = "UMAP", theme_use = "theme_blank",label = T, label_insitu =T )  |
+  CellDimPlot(seu_harmony, group.by = "RNA_snn_res.0.3", 
+                  reduction = "UMAP", theme_use = "theme_blank",label = T, label_insitu =T )  |
+  CellDimPlot(seu_harmony, group.by = "RNA_snn_res.0.5", 
+                  reduction = "UMAP", theme_use = "theme_blank",label = T, label_insitu =T )  |
+  CellDimPlot(seu_harmony, group.by = "paper_ann_1", 
+                  reduction = "UMAP", theme_use = "theme_blank",label = T, label_insitu =T )  |
+  CellDimPlot(seu_harmony, group.by = "disease", 
+              reduction = "UMAP", theme_use = "theme_blank",label = F , label_insitu =T) 
+
+ggsave(file.path(output_4,'CellDimPlot_umap_harmony_n50d05_AT2_LUAD_SCLC_29127_epi_HLCA_HTAN_LuCA_GSE131907.pdf'),c1,width = 25,height = 5)  
+c2 <- CellDimPlot(seu_harmony, group.by = "RNA_snn_res.0.3", split.by  = "disease",legend.position = 'none',
+                  reduction = "UMAP", theme_use = "theme_blank")  
+ggsave(file.path(output_4,'CellDimPlot_res03_bydisease_umap_harmony_n50d05_AT2_LUAD_SCLC_29127_epi_HLCA_HTAN_LuCA_GSE131907.pdf'),c2,width = 12,height = 4)  
+
+# 获取细胞分组和disease信息
+c3 <- CellStatPlot(srt = seu_harmony, stat.by = "disease", group.by = "RNA_snn_res.0.3", label = F)
+ggsave(file.path(output_4,"CellStatPlot_res03_bydisease_umap_harmony_n50d05_AT2_LUAD_SCLC_29127_epi_HLCA_HTAN_LuCA_GSE131907.pdf"), c3, width = 10, height = 6)
+gc()
+```
+
+1.6 清理上述res0.1下的cluster，去除那些边上的小cluster：c 3/4/5；接下来根据res0.5做后续分析。保证LUAD中有足够的小群，能找到与SCLC相似pattern的群。
+```{r}
+sce_1 <- subset(seu_harmony,RNA_snn_res.0.1 %in% c(0:2))
+
+sce_1$RNA_snn_res.0.1 <- droplevels(sce_1$RNA_snn_res.0.1)
+sce_1$RNA_snn_res.0.5 <- droplevels(sce_1$RNA_snn_res.0.5) 
+dim(sce_1)
+table(sce_1$RNA_snn_res.0.5,sce_1$disease)
+```
+
+1.7 清除杂群
+```{r}
+filter_1 <- sce_1$disease == c('LUAD') & sce_1$RNA_snn_res.0.5 %in% c(1,2,4,9)
+filter_2 <- sce_1$disease == c('SCLC') & sce_1$RNA_snn_res.0.5 %in% c(0,8)
+
+# 3:将所有过滤条件整合到一起
+cells_to_filter <- (filter_1 | filter_2 )
+
+# 4:过滤
+sce_2 <- subset(sce_1, cells = colnames(sce_1)[!cells_to_filter])
+
+dim(sce_2)
+table(sce_2$RNA_snn_res.0.5,sce_2$disease)
+```
+
+```{r}
+qs::qsave(sce_2,file.path(output_4,'4_harmony_28960_n50d05_AT2_LUAD_SCLC_epi_HLCA_HTAN_LuCA_GSE131907.qs'))
+```
+
+1.8 展示不同clusters的markers的表达情况
+```{r}
+markers_1 <- c(
+  "SFTPB", "SFTPC",  #AT2
+  'MALAT1','NEAT1', #LUAD_pro
+  "NKX2-1", "MUC1",  # LUAD
+  'VIM','MSLN',  # LUAD_EMT
+  'NCAM1','TUBA1A',  #LUAD_NE
+  "ASCL1","GRP",    # SCLC-A
+  "NEUROD1", "NEFM",# SCLC-N
+  "POU2F3","ASCL2" # SCLC-P
+)
+
+# 定义对应的 cell type 向量
+cell_types <- c(
+  rep("AT2", 2),
+  rep("LUAD_pro", 2),
+  rep("LUAD", 2),
+  rep("LUAD_EMT", 2),
+  rep("LUAD_NE", 2),
+  rep("SCLC-A", 2),
+  rep("SCLC-N", 2),
+  rep("SCLC-P", 2)
+)
+
+# 构建 de_top 数据框
+de_top <- data.frame(
+  gene = markers_1,
+  group1 = cell_types
+)
+# 绘制热图
+ht1 <- GroupHeatmap(
+  srt = sce_2,
+  features = de_top$gene,
+  feature_split = de_top$group1, 
+  group.by = "RNA_snn_res.0.5",
+  heatmap_palette = "YlOrRd",
+  cell_annotation = c("Phase", "G2M.Score", "disease"),
+  dot_size = unit(5, "mm"),
+  show_row_names = TRUE, row_names_side = "left",
+  cluster_rows =T,
+  label_size =5,
+  width = 4,height = 6,
+  add_dot = TRUE, add_reticle = TRUE
+)
+ggsave(file.path(output_4,'GroupHeatmap_markers_res05_28960_n50d05_AT2_LUAD_SCLC_epi_HLCA_HTAN_LuCA_GSE131907.pdf'),ht1$plot,height = 10, width = 10)
+```
+
+1.9 根据markers情况进行注释
+```{r}
+annotations <- c(
+  '1'="AT2",
+  "2" = "LUAD",
+  '0' = "SCLC"
+ )
+# 创建一个函数来展开注释
+expand_annotations <- function(annotations) {
+  result <- list()
+  for (name in names(annotations)) {
+    clusters <- as.numeric(unlist(strsplit(name, ",")))
+    for (cluster in clusters) {
+      result[[as.character(cluster)]] <- annotations[[name]]
+    }
+  }
+  return(result)
+}
+
+# 展开注释
+expanded_annotations <- expand_annotations(annotations)
+
+# 将聚类结果转换为细胞类型注释
+sce_2$epi_celltype1 <- plyr::mapvalues(
+  sce_1$RNA_snn_res.0.1,
+  from = as.numeric(names(expanded_annotations)),
+  to = unname(unlist(expanded_annotations))
+)
+
+sce_2$epi_celltype1 <- factor(sce_2$epi_celltype1,
+                            levels = c("AT2","LUAD", "SCLC"))
+
+```
+
+1.10 重新绘制umap图，并保存过滤后的seurat对象
+```{r}
+c1 <- CellDimPlot(sce_2, group.by = "epi_celltype1", 
+                  reduction = "UMAP", theme_use = "theme_blank",label = T, label_insitu =T )  |
+  CellDimPlot(sce_2, group.by = "paper_ann_1", 
+                  reduction = "UMAP", theme_use = "theme_blank",label = T, label_insitu =T )  |
+  CellDimPlot(sce_2, group.by = "disease", 
+              reduction = "UMAP", theme_use = "theme_blank",label = F , label_insitu =T) 
+ggsave(file.path(output_4,'CellDimPlot_epi_celltype1_res05_28960_n50d05_AT2_LUAD_SCLC_epi_HLCA_HTAN_LuCA_GSE131907.pdf'),c1,width = 20,height = 7)  
+
+c2 <- CellDimPlot(sce_2, group.by = "epi_celltype1", 
+                  reduction = "UMAP", theme_use = "theme_blank",label = T, label_insitu =T )  
+ggsave(file.path(output_4,'CellDimPlot_epicelltype1_AT2_LUAD_SCLC_epi_HLCA_HTAN_LuCA_GSE131907.pdf'),c2,width = 4,height = 3)  
+
+```
+
+1.11 保存过滤后的seurat对象
+```{r}
+qs::qsave(sce_2,file.path(output_4,'4_epi_celltype1_filtered_harmony_res05_28960_n50d05_AT2_LUAD_SCLC_epi_HLCA_HTAN_LuCA_GSE131907.qs'))
+```
+绘制epi-celltype1的cluster特异markers的dotplot
+```{r}
+############################################################################
+############################################################################
+markers_2 <- c(
+  "SFTPA1", "LAMP3",  #AT2
+   "KRT8", 'CEACAM5', #LUAD. 'NAPSA','MUC1'在AT2中高表达，LUAD中相对低
+  "ASCL1",'DLL3'  #SCLC。,"NEUROD1"表达量较前面两个低
+   )
+
+# 定义对应的 cell type 向量
+cell_types <- c(
+  rep("AT2", 2),
+  rep("LUAD", 2),
+  rep("SCLC", 2)
+  )
+
+# 构建 de_top 数据框
+de_top <- data.frame(
+  gene = markers_2,
+  group1 = cell_types
+)
+
+ht1 <- GroupHeatmap(
+  srt = sce_2,
+  features = de_top$gene,
+  feature_split = de_top$group1, 
+  group.by = "epi_celltype1",
+  fill_palette = "Blues",
+  heatmap_palette = "RdBu",
+  cell_annotation = c("Phase",  "disease"),
+  dot_size = unit(7, "mm"),
+  show_row_names = TRUE, row_names_side = "left",
+  cluster_rows =T,
+  label_size =15,
+  width = 2,height = 2,
+  #row_names_gp = grid::gpar(fontsize = 15),
+  add_dot = TRUE, add_reticle = TRUE
+)
+ggsave(file.path(output_4,'v2_GroupHeatmap_epi_celltype1_markers_res05_28960_n50d05_AT2_LUAD_SCLC_epi_HLCA_HTAN_LuCA_GSE131907.pdf'),ht1$plot,height = 8, width =8)
+```
+
+
+2 计算27个regulon list的活性评分，查看不同cluster的表达情况
+2.1 基本资源设置，读取处理后的27个regulon list
+```{r}
+source('/home/data/tmh_project/SCLC/source_global/write_read_gmt.R')
+source("/home/data/tmh_project/SCLC/source_global/compute_module_score.R")
+
+#设置工作目录
+output_GRN <- file.path(output_4,'27regulons')
+dir.create(output_GRN)
+
+regulon.list <- read_gmt_file("/home/data/tmh_project/SCLC/Fig1_sc_mousemodel/after_scenic/regulon27_human_v1.gmt")
+```
+
+2.2 计算活性评分
+```{r}
+seu <- ComputeModuleScore(sce_2, gene.sets = regulon.list, min.size = 5, cores = 10)
+DefaultAssay(seu) <- "AUCell"
+seu@assays$AUCell@counts <- seu@assays$AUCell@data
+```
+
+```{r}
+qs::qsave(seu,file.path(output_4,'4_27regulonsAUCell_epi_celltype1_filtered_harmony_res05_28960_n50d05_AT2_LUAD_SCLC_epi_HLCA_HTAN_LuCA_GSE131907.qs') )
+```
+
+2.3 将以上27个regulon的AUcell结果在热图等图片上展示出来。
+```{r}
+########################################################################################################################################################
+library(scRNAtoolVis)
+Idents(seu) <- 'epi_celltype1'
+colsp <- c('#FED439FF','#46732EFF','#FF91AF','#F05C3BFF','#9370DB','#FD7446FF','#D5E4A2FF','#197EC0FF','#8A9197FF','#D2AF81FF','#709AE1FF',
+           '#F8D568','#71D0F5FF','#370335FF','#075149FF','#C80813FF','#91331FFF','#1A9993FF','#FD8CC1FF','#FF6700',
+           '#00AD43','#89CFF0','#BA160C','#A6A6A6','#006DB0','#C154C1','#D99A6C','#96C8A2','#FBEC5D')
+
+AverageHeatmap(object = seu,assays = "AUCell",
+               markerGene = names(regulon.list), #names(regulon.list)
+               clusterAnnoName = T,
+               width = 7,height = 12,
+               annoCol = TRUE,
+               myanCol = colsp[1:3]
+)
+#ggsave(file.path(output_GRN,'AverageHeatmap_27regulonsAUCell_epi_celltype1_28960_AT2_LUAD_SCLC_epi_HLCA_HTAN_LuCA_GSE131907.pdf'),p1,height = 20, width =10)
+DefaultAssay(seu) <- 'AUCell'
+ht <- GroupHeatmap(
+  srt = seu,
+  features =names(regulon.list),
+  group.by = "epi_celltype1",
+  heatmap_palette = "YlOrRd",
+  show_row_names = TRUE, row_names_side = "left",
+  #cluster_rows =T,
+  label_size =5,
+  width = 5,height = 8,
+  dot_size = unit(8, "mm"),
+  add_dot = TRUE, add_reticle = TRUE
+)
+ggsave(file.path(output_GRN,'GroupHeatmap_27regulonsAUCell_epi_celltype1_28960_AT2_LUAD_SCLC_epi_HLCA_HTAN_LuCA_GSE131907.pdf'),ht$plot,height = 10, width =10)
+
+ht1 <- FeatureHeatmap(
+  srt = seu, 
+  group.by = "epi_celltype1",
+  split.by = 'disease',
+  features =names(regulon.list),
+  species = "Homo_sapiens",
+  height = 8, width = 4,
+  nlabel = 0,
+  label_size = 0,
+  show_row_names = T
+  #cluster_rows =T
+)
+ggsave(file.path(output_GRN,'featureheatmap_27regulonsAUCell_epi_celltype1_28960_AT2_LUAD_SCLC_epi_HLCA_HTAN_LuCA_GSE131907.pdf'),ht1$plot,height = 10, width =10)
+```
+
+2.4 将以上27个regulon的AUcell结果在featuredimplot中展示出来。
+```{r}
+#查看以上regulon list的表达情况。
+f1 <- FeatureDimPlot(srt = seu, features =names(regulon.list) ,ncol = 9,theme_use = "theme_blank")
+ggsave(file.path(output_GRN,'FeatureDimPlot_27regulonsAUCell_epi_celltype1_28960_AT2_LUAD_SCLC_epi_HLCA_HTAN_LuCA_GSE131907.pdf'),f1 ,height =10, width =21)
+```
+
+2.5 展示27个TFs在数据中的表达情况
+```{r}
+###################################################################################################################################
+#查看以上转录因子的表达情况。
+TFs_27 <- c("ASCL1", "BHLHE41", "E2F8", "FOXM1", "HDAC2", "IRF6", "MYB", "MYBL2", "MYC", "NFYB", 
+            "PEG3", "PHF20", "PKNOX1", "TFDP1", "CEBPB", "CEBPD", "CUX1", "EHF", "ELF1", "ELF5", 
+            "ETV1", "ING4", "IRX1", "MAFB", "SOX9", "SREBF1", "ZNF467")
+
+DefaultAssay(seu) <- 'RNA'
+f2 <- FeatureDimPlot(srt = seu, features = TFs_27 ,ncol = 9, theme_use = "theme_blank")
+ggsave(file.path(output_GRN,'FeatureDimPlot_27TF_epi_celltype1_28960_AT2_LUAD_SCLC_epi_HLCA_HTAN_LuCA_GSE131907.pdf'),f2 ,height =10, width =21)
+
+ht2 <- FeatureHeatmap(
+  srt = seu, group.by = "epi_celltype1", features = TFs_27,
+  species = "Homo_sapiens",
+  height = 7, width =4,
+  nlabel = 0,
+  label_size = 0,
+  show_row_names = T
+  #cluster_rows =T
+)
+ggsave(file.path(output_GRN,'FeatureHeatmap_27TF_epi_celltype1_28960_AT2_LUAD_SCLC_epi_HLCA_HTAN_LuCA_GSE131907.pdf'),ht2$plot ,height = 10, width = 10)
+
+Idents(seu) <- 'epi_celltype1'
+AverageHeatmap(object = seu,
+               markerGene = TFs_27,
+               clusterAnnoName = T,
+               width = 7,height = 12,
+               annoCol = TRUE,
+               myanCol = colsp[1:3]
+)
+# ggsave(file.path(output_GRN,'AverageHeatmap_27TF_epi_celltype1_28960_AT2_LUAD_SCLC_epi_HLCA_HTAN_LuCA_GSE131907.pdf'),p1,height = 20, width =10)
+```
+
+

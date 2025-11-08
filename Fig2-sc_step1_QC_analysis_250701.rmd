@@ -1,0 +1,248 @@
+---
+title: "Fig2_1_QC_sc_human_LUAD_SCLC_Normal"
+author: "tang"
+date: "2025-07-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = here::here())
+```
+
+```{r}
+#建立脚本专用文件夹，用于存储Fig2_sc_human的脚本
+Rscripts_dir <- '/home/data/tmh_project/SCLC/Fig2_sc_human/Fig2_Rscripts/'
+```
+
+1.加载R包，读取文件，对样本进行初次过滤：
+过滤条件：
+① 非关注细胞类型：AT1/AT2/LUAD/SCLC/tumor cells；
+② 原文注释与病理类型明显不符；
+③ 过滤细胞数≤ 50的sample
+
+1.1 加载R包
+```{r}
+library(Seurat)
+library(tidyverse)
+library(SCP)
+
+output_1 <- '1_QC'
+dir.create(output_1)
+```
+
+1.2 读取qs文件
+```{r}
+folder_path <- "/home/data/tmh_project/SCLC/data_sc_LUAD_SCLC_Normal/processed_data"
+rds_files <- list.files(folder_path, pattern = "\\.qs$", full.names = TRUE)
+
+seu_list <- list()
+```
+
+```{r}
+for (rds_file in rds_files) {
+  seurat_obj <- qs::qread(rds_file)
+  file_name <- basename(rds_file)  # 获取文件名（带扩展名）
+  prefix <- str_extract(file_name, "(?<=_)[^_]+_[^_]+(?=_)")
+  seu_list[[prefix]] <- seurat_obj
+}
+
+```
+
+1.3 保存四个dataset全部的上皮细胞文件
+```{r}
+seu <- base::Reduce(f = merge, x = seu_list)
+dim(seu)
+rm(seu_list,seurat_obj)
+gc()
+```
+
+```{r}
+qs::qsave(seu, file.path(output_1,"1_all_157181_LUAD_SCLC_norm_epi_HLCA_HTAN_LuCA_GSE131907_250701.qs"))
+```
+
+1.4 初步过滤，只保留原文注释中明确的AT1/AT2/LUAD/SCLC/tumor cells等的细胞。去除原文无法注释的unknown以及mix(可能混有LUSC的细胞)
+```{r}
+table(seu$paper_ann_1)
+dput(unique(seu$paper_ann_1))
+```
+
+```{r}
+seu_1 <- subset(seu,paper_ann_1 %in% c("Epithelium",  "AT2", "AT1", "SCLC-N", "SCLC-A", "SCLC-P", "NSCLC",
+                                         "Tumor cells LUAD", "Tumor cells LUAD mitotic", "Tumor cells LUAD EMT", 
+                                         "Tumor cellsLUAD NE", "Tumor cells LUAD MSLN"))
+dim(seu_1)
+table(seu_1$paper_ann_1,seu_1$disease)
+```
+
+1.5 第二次过滤，去除病理类型与原文注释明显不符的细胞
+```{r}
+# 1：disease SCLC, epi_celltype1 为"NSCLC"的细胞;
+filter_sclc <- seu_1$disease == "SCLC" & seu_1$paper_ann_1 %in% c("NSCLC")
+
+# 2：disease 为LUAD,epi_celltype1 为"AT1","AT2"的细胞; 
+filter_luad <- seu_1$disease == "LUAD" & seu_1$paper_ann_1 %in% c("AT1","AT2")
+
+# 3:将所有过滤条件整合到一起
+cells_to_filter <- (filter_sclc | filter_luad )
+
+# 4:过滤
+seu_2 <- subset(seu_1, cells = colnames(seu_1)[!cells_to_filter])
+
+dim(seu_2)
+table(seu_1$paper_ann_1,seu_1$disease)
+```
+
+1.6 第三次过滤，只保留细胞数＞50的sample
+```{r}
+sample_counts <- table(seu_2$sample)
+samples_to_keep <- names(sample_counts[sample_counts > 50])
+
+seu_3 <- subset(seu_2, subset = sample %in% samples_to_keep)
+```
+
+```{r}
+library(crayon)
+
+# 自定义美化输出函数
+pretty_print <- function(title, data, color = cyan) {
+  cat(color$bold(paste0("\n>>> ", title, " <<<\n")))
+  if (is.vector(data)) {
+    print(data)
+  } else {
+    # 使用简单的 print 替代 kable
+    print(data)
+  }
+}
+
+# 过滤前样本统计
+cat(green$bold("过滤前样本统计:\n"))
+pretty_print("样本总数", length(unique(seu_2$sample)), green)
+
+sample_disease_counts <- table(seu_2$sample, seu_2$disease)
+unique_samples_per_disease <- apply(sample_disease_counts, 2, function(x) sum(x > 0))
+pretty_print("不同 disease 的 sample 数目", unique_samples_per_disease, blue)
+
+# 过滤后样本统计
+cat(red$bold("\n过滤后样本统计:\n"))
+pretty_print("样本总数", length(unique(seu_3$sample)), red)
+
+sample_disease_counts <- table(seu_3$sample, seu_3$disease)
+unique_samples_per_disease <- apply(sample_disease_counts, 2, function(x) sum(x > 0))
+pretty_print("不同 disease 的 sample 数目", unique_samples_per_disease, magenta)
+
+# 不同 disease 的细胞数据
+cat(yellow$bold("\n细胞分布统计:\n"))
+pretty_print("不同 disease 的细胞数", table(seu_3$disease), yellow)
+
+# 数据维度
+cat(cyan$bold("\n数据维度:\n"))
+pretty_print("数据维度 (cells × features)", dim(seu_3), cyan)
+
+# Cell type 在不同 disease 中的分布
+cat(green$bold("\nCell Type 分布:\n"))
+celltype_disease_table <- table(seu_3$paper_ann_1, seu_3$disease)
+pretty_print("Cell Type 在不同 disease 中的分布", celltype_disease_table, green)
+```
+
+1.7 保存上述过滤后的样本
+```{r}
+qs::qsave(seu_3, file.path(output_1,"1_filtered1_141282_LUAD_SCLC_norm_epi_HLCA_HTAN_LuCA_GSE131907_250701.qs"))
+```
+
+2 对样本进行质控，去除低测序质量的细胞及sample
+2.1 质控展示
+```{r}
+rm(list=ls())
+gc()
+output_1 <- '1_QC'
+Rscripts_dir <- '/home/data/tmh_project/SCLC/Fig2_sc_human/Fig2_Rscripts/'
+seu_3 <- qs::qread(file.path(output_1,"1_filtered1_141282_LUAD_SCLC_norm_epi_HLCA_HTAN_LuCA_GSE131907_250701.qs"))
+```
+
+```{r fig.height=7, fig.width=20, paged.print=FALSE}
+source(file.path(Rscripts_dir,'1_QC_step21_analysis.R'))
+
+# 使用示例
+qc_results_custom_dir <- comprehensive_qc_analysis(
+  seu_3,
+  output_dir = output_1,
+  group_by_col = 'disease',
+  filter_params = list(
+    "nCount_RNA" = list(min = 10000, max = 50000),
+    "nFeature_RNA" = list(min = 1500, max = 15000),
+    "percent.mt" = list(max = 15),
+    "percent.ribo" = list(max = 30)
+  )
+  )
+```
+
+2.2 设置过滤条件，并进行过滤
+```{r}
+# 创建过滤函数
+generate_filter_condition <- function(seu_obj, filter_params) {
+  conditions <- lapply(names(filter_params), function(param) {
+    param_list <- filter_params[[param]]
+    condition <- TRUE
+    
+    if (!is.null(param_list$min)) {
+      condition <- condition & seu_obj@meta.data[[param]] >= param_list$min
+    }
+    if (!is.null(param_list$max)) {
+      condition <- condition & seu_obj@meta.data[[param]] <= param_list$max
+    }
+    
+    return(condition)
+  })
+  
+  # 合并所有条件
+  Reduce(`&`, conditions)
+}
+
+# 定义质控参数
+filter_params_high <- list(
+  "nCount_RNA" = list(min = 10000, max = 50000),
+  "nFeature_RNA" = list(min = 1500, max = 15000),
+  "percent.mt" = list(max = 15),
+  "percent.ribo" = list(max = 30)
+)
+
+# 创建高质量Seurat对象
+seu_high <- seu_3[, generate_filter_condition(seu_3, filter_params_high)]
+
+# 查看过滤前后的细胞数变化
+cat("过滤前细胞数:", dim(seu_3)[2], "\n")
+cat("过滤后细胞数:", dim(seu_high)[2], "\n")
+```
+
+```{r}
+table(seu_high$paper_ann_1,seu_high$disease)
+```
+
+2.3 去除AT1 细胞，只有94个细胞
+```{r}
+seu_high <- subset(seu_high,paper_ann_1=='AT1',invert=T)
+seu_high$paper_ann_1 <- as.factor(seu_high$paper_ann_1)
+seu_high$paper_ann_1 <- droplevels(seu_high$paper_ann_1)
+table(seu_high$paper_ann_1,seu_high$disease)
+dim(seu_high)
+```
+
+```{r}
+qs::qsave(seu_high,file.path(output_1,'2_highQC_filtered2_48292_LUAD1W_SCLC3W_norm1W_epi_HLCA_HTAN_LuCA_GSE131907_250701.qs'))
+```
+
+3 计算细胞周期
+```{r}
+#### 计算细胞周期(推荐) ####
+seu_high <- NormalizeData(seu_high)
+s.genes <- cc.genes.updated.2019$s.genes
+g2m.genes <- cc.genes.updated.2019$g2m.genes
+seu_high <- CellCycleScoring(seu_high, s.features = s.genes, g2m.features = g2m.genes)
+
+qs::qsave(seu_high ,file.path(output_1,"3_CellCycleScoring_highQC_filtered2_48292_LUAD1W_SCLC3W_norm1W_epi_HLCA_HTAN_LuCA_GSE131907_250526.qs"))
+```
+
+
+
+
+

@@ -1,0 +1,274 @@
+---
+title: "Fig3_step1_model_tcga"
+author: "tang"
+date: "2025-08-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = here::here())
+```
+
+1 运行tcga数据,分型、预后
+**ssgsea方法**
+```{r}
+source('Rscripts/Fig3_step1_run_gsva_survival.R')
+
+# 1 执行Regulon聚类分析
+clustering_results <- perform_regulon_clustering(
+  exp_data_path = "0_Fig3_cohort_data/1_TCGA_LUAD/LUAD_fpkm_new.csv",
+  gmt_file_path = "/home/data/tmh_project/SCLC/Fig2_NTbulk_human/regulon13_human_v1.gmt", 
+  output_dir = "1_TCGA/ssgsea",
+  clustering_methods = c("hierarchical"
+                         #, "kmeans", "pam"这两个模型之前测试过，结果不好，此处不再运行。
+                         ),
+  n_clusters = 3,
+  gsva_method = "ssgsea",
+  verbose = TRUE  # 修改这一行，从verbose_clustering改为verbose
+)
+
+
+# 2 执行生存分析
+survival_results <- perform_survival_analysis(
+  cluster_results = clustering_results$cluster_results,
+  survival_data_path = "0_Fig3_cohort_data/1_TCGA_LUAD/tcga_all_LUAD_os_new.csv",
+  output_dir = "1_TCGA/ssgsea",
+  verbose = TRUE
+  )
+
+```
+
+2 训练模型，注意脚本中默认是10个regulon，若数目改变，需要改动脚本。针对tcga数据建立模型 (优化版)
+```{r}
+source('Rscripts/Fig3_step1_model_train.R')
+# 加载聚类结果
+clustering_output <- readRDS("1_TCGA/ssgsea/clustering_output_complete.rds")
+
+# 训练模型
+models <- train_and_save_models(
+  clustering_results = clustering_output,
+  save_path = "2_models",
+  clustering_methods = c("hierarchical"
+                         #, "kmeans", "pam"
+                         ),
+  gsva_method = "ssgsea"  # 添加GSVA方法参数
+)
+
+```
+
+**以下方法不使用，图版脚本不再运行。**
+
+**gsva方法**
+```{r}
+# 执行Regulon聚类分析
+clustering_results <- perform_regulon_clustering(
+  exp_data_path = "0_Fig3_cohort_data/1_TCGA_LUAD/LUAD_fpkm_new.csv",
+  gmt_file_path = "/home/data/tmh_project/SCLC/Fig2_NTbulk_human/regulon13_human_v1.gmt", 
+  output_dir = "1_TCGA/gsva",
+  clustering_methods = c("hierarchical", "kmeans", "pam"),
+  n_clusters = 3,
+  gsva_method = "gsva",
+  verbose_clustering = TRUE
+)
+
+# 执行生存分析
+survival_results <- perform_survival_analysis(
+  cluster_results = clustering_results$cluster_results,
+  survival_data_path = "0_Fig3_cohort_data/1_TCGA_LUAD/tcga_all_LUAD_os_new.csv",
+  output_dir = "1_TCGA/gsva",
+  verbose = TRUE
+ )
+
+
+clustering_output <- readRDS("1_TCGA/gsva/clustering_output_complete.rds")
+# 训练模型
+models <- train_and_save_models(
+  clustering_results = clustering_output,
+  save_path = "2_models",
+  gsva_method = "gsva",  # 添加GSVA方法参数
+  clustering_methods = c("hierarchical", "kmeans", "pam")
+  )
+
+```
+
+**zscore方法**
+```{r}
+# 执行Regulon聚类分析
+clustering_results <- perform_regulon_clustering(
+  exp_data_path = "0_Fig3_cohort_data/1_TCGA_LUAD/LUAD_fpkm_new.csv",
+  gmt_file_path = "/home/data/tmh_project/SCLC/Fig2_NTbulk_human/regulon13_human_v1.gmt", 
+  output_dir = "1_TCGA/zscore",
+  clustering_methods = c("hierarchical", "kmeans", "pam"),
+  n_clusters = 3,
+  gsva_method = "zscore",
+  verbose_clustering = TRUE
+  )
+
+# 执行生存分析
+survival_results <- perform_survival_analysis(
+  cluster_results = clustering_results$cluster_results,
+  survival_data_path = "0_Fig3_cohort_data/1_TCGA_LUAD/tcga_all_LUAD_os_new.csv",
+  output_dir = "1_TCGA/zscore",
+  verbose = TRUE
+  )
+
+clustering_output <- readRDS("1_TCGA/zscore/clustering_output_complete.rds")
+# 训练模型
+models <- train_and_save_models(
+  clustering_results = clustering_results,
+  save_path = "2_models",
+  gsva_method = "zscore",
+  clustering_methods = c("hierarchical", "kmeans", "pam")
+  )
+```
+
+
+
+**plage方法**这个结果预后不行，去除
+```{r}
+# 执行Regulon聚类分析
+clustering_results <- perform_regulon_clustering(
+  exp_data_path = "0_Fig3_cohort_data/1_TCGA_LUAD/LUAD_fpkm_new.csv",
+  gmt_file_path = "/home/data/tmh_project/SCLC/Fig2_NTbulk_human/regulon13_human_v1.gmt", 
+  output_dir = "1_TCGA/plage",
+  clustering_methods = c("hierarchical", "kmeans", "pam"),
+  n_clusters = 3,
+  gsva_method = "plage",
+  verbose_clustering = TRUE
+  )
+
+# 执行生存分析
+survival_results <- perform_survival_analysis(
+  cluster_results = clustering_results$cluster_results,
+  survival_data_path = "0_Fig3_cohort_data/1_TCGA_LUAD/tcga_all_LUAD_os_new.csv",
+  output_dir = "1_TCGA/plage",
+  verbose = TRUE
+  )
+
+
+clustering_output <- readRDS("1_TCGA/plage/clustering_output_complete.rds")
+# 训练模型
+models <- train_and_save_models(
+  clustering_results = clustering_output,
+  save_path = "2_models",
+  gsva_method = "plage",  # 添加GSVA方法参数
+  clustering_methods = c("hierarchical", "kmeans", "pam")
+  )
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+**以下为弃用代码**
+```{r}
+source("Rscripts/1_bulk_run_gsva_survival.R") 
+
+# --- 定义你的输入文件和输出目录 ---
+expression_file_path <- "./input/2_expression_data/LUAD_fpkm_new.csv"
+gmt_file_path        <- "/home/data/tmh_project/SCLC/Fig2_NTbulk_human/regulon13_human_v1.gmt"
+survival_file_path   <- "./input/5_tcga_all_luad_os_pfs/tcga_all_LUAD_os_new.csv"
+output_directory     <- "01_TCGA/"
+
+# --- 确保输出目录存在 ---
+if (!dir.exists(output_directory)) {
+  dir.create(output_directory, recursive = TRUE)
+  cat("创建输出目录:", output_directory, "\n")
+} else {
+  cat("输出目录已存在:", output_directory, "\n")
+}
+
+# --- 步骤 1: 执行 Regulon 分析和聚类 ---
+cat("\n=== 开始 Regulon 聚类分析 ===\n")
+clustering_output <- NULL # 初始化以备错误处理
+
+tryCatch({
+  clustering_output <- perform_regulon_clustering(
+    exp_data_path      = expression_file_path,
+    gmt_file_path      = gmt_file_path,
+    output_dir         = output_directory,
+    clustering_methods = c("hierarchical", "kmeans", "pam"), # 你可以选择: "hierarchical", "kmeans", "pam"
+    n_clusters         = 3,                          # 根据你的数据调整聚类数目
+    gsva_method        = "ssgsea"                    # 可选 "gsva" 或 "ssgsea" (及其他将使用ssGSEA的)
+  )
+  cat("=== Regulon 聚类分析成功完成 ===\n")
+}, error = function(e_clust) {
+  cat("错误!!! Regulon 聚类分析失败:\n")
+  print(e_clust)
+})
+
+
+# --- 步骤 2: 执行预后分析 (仅当聚类步骤成功且有结果时) ---
+if (!is.null(clustering_output) && !is.null(clustering_output$cluster_results) && length(clustering_output$cluster_results) > 0) {
+  cat("\n=== 开始生存分析 ===\n")
+  survival_output <- NULL # 初始化
+  
+  tryCatch({
+    survival_output <- perform_survival_analysis(
+      cluster_results    = clustering_output$cluster_results,
+      survival_data_path = survival_file_path,
+      output_dir         = output_directory
+    )
+    cat("=== 生存分析成功完成 ===\n")
+    }, error = function(e_surv) {
+    cat("错误!!! 生存分析失败:\n")
+    print(e_surv)
+  })
+} else {
+  cat("\n由于Regulon聚类步骤失败或未产生有效聚类结果，跳过生存分析。\n")
+  if (!is.null(clustering_output) && is.null(clustering_output$cluster_results)) {
+    cat("诊断信息: clustering_output$cluster_results 为 NULL。\n")
+  }
+  if (!is.null(clustering_output) && !is.null(clustering_output$cluster_results) && length(clustering_output$cluster_results) == 0) {
+    cat("诊断信息: clustering_output$cluster_results 长度为 0。\n")
+  }
+}
+
+cat("\n=== 脚本执行完毕 ===\n")
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

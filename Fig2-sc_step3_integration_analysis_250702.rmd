@@ -1,0 +1,261 @@
+---
+title: "Fig2_step3_integration_analysis"
+author: "tang"
+date: "2025-07-02"
+output: html_document
+---
+**JN的FDG整合方法不行，可能是细胞数太多了，好丑**
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = here::here())
+```
+
+接/home/data/tmh_project/SCLC/Fig2_sc_human/Fig2_1_QC_analysis_250526.rmd & Fig2_2_Doubletfinder_analysis_250526.rmd继续运行.
+**注意分脚本，避免内容过多无法加载，引起程序崩溃。**
+**step2只是标注了doublet预测情况，后续并没有去除doublet细胞，而是全部保存进行后续的分析。**
+1 加载数据，整合
+1.1 设置工作路径，及基本的路径名称
+```{r}
+Rscripts_dir <- '/home/data/tmh_project/SCLC/Fig2_sc_human/Fig2_Rscripts/'
+
+seu1 <- qs::qread("2_doubletfinder/1_markdoublet_filtered3_47402_LUAD1W_SCLC3W_norm1W_epi_HLCA_HTAN_LuCA_GSE131907_250701.qs")
+
+#设置工作路径
+output_3 = "3_integration"
+dir.create(output_3, showWarnings = FALSE)
+```
+
+1.2 加载R包 
+```{r}
+library(Seurat)
+library(tidyverse)
+library(scutilsR)
+library(harmony)
+library(SCP)
+```
+
+1.3 标准化、归一化、找高变基因
+```{r}
+set.seed(123)
+seu1 <- seu1 %>%
+  NormalizeData() %>%
+  FindVariableFeatures(nfeatures = 2000) %>%
+  ScaleData() %>%
+  RunPCA(npcs =30)
+```
+
+**1.4-1.6此处省略，测试时已经运行过，此处跳过**
+1.4 harmony的方法进行整合，设置umap不同参数，确定合适参数
+```{r}
+library(Seurat)
+library(harmony)
+library(dplyr)
+set.seed(123)
+# 创建参数组合
+n_neighbors_list <- c(10, 20, 30, 50)
+min_dist_list <- c(0.1, 0.3, 0.5)
+
+# 创建一个函数来执行UMAP并添加到原始对象
+run_umap_variations <- function(seu, n_neighbors, min_dist) {
+  # 运行UMAP并重命名reduction
+  reduction_name <- paste0("umap_n", n_neighbors, "_d", min_dist)
+  
+  seu <- seu %>%
+    RunUMAP(
+      reduction = "harmony", 
+      dims = 1:30,
+      n.neighbors = as.integer(n_neighbors),
+      min.dist = min_dist,
+      reduction.name = reduction_name
+    )
+  
+  return(seu)
+}
+
+# 批量处理
+seu_2 <- seu1 %>%
+  RunHarmony(group.by.vars = c('sample'), reduction.use = "pca", dims.use = 1:30) %>%
+  FindNeighbors(reduction = "harmony", dims = 1:30) %>%
+  FindClusters(resolution = seq(0.1, 0.5, 0.1))
+
+# 应用不同参数的UMAP
+for (n_neighbors in n_neighbors_list) {
+  for (min_dist in min_dist_list) {
+    seu_2 <- run_umap_variations(seu_2, n_neighbors, min_dist)
+  }
+}
+
+```
+
+1.5 展示harmony下不同umap参数的图
+```{r fig.height=15, fig.width=20}
+# 绘图比较
+library(patchwork)
+
+# 创建绘图函数
+plot_umaps <- function(seu) {
+  plot_list <- list()
+  
+  # 遍历所有UMAP reductions
+  umap_reductions <- grep("^umap_", Reductions(seu), value = TRUE)
+  
+  for (reduction in umap_reductions) {
+    p <- DimPlot(seu, reduction = reduction, group.by = "RNA_snn_res.0.3") + 
+         ggtitle(reduction)
+    plot_list[[reduction]] <- p
+  }
+  
+  return(wrap_plots(plot_list, ncol = 4))
+}
+
+# 绘制所有UMAP
+plot_umaps(seu_2)
+```
+
+```{r fig.height=7, fig.width=15}
+CellDimPlot(seu_2, group.by = "paper_ann_1", 
+                  reduction = "umap_n10_d0.1", theme_use = "theme_blank",label = T, label_insitu =T )  |
+  CellDimPlot(seu_2, group.by = "disease", 
+              reduction = "umap_n10_d0.1", theme_use = "theme_blank",label = F , label_insitu =T) 
+```
+
+1.6 保存seurat对象，不同umap参数
+```{r}
+qs::qsave(seu_2,file.path(output_3,'3_multi_harmony_highQC_47402_filtered_LUAD1W_SCLC3W_norm1W_epi_HLCA_HTAN_LuCA_GSE131907_250526.qs'))
+```
+
+2 确定参数，运行整合、降维聚类流程，保存相关文件
+2.1 选定合适umap参数，重新运行单独保存seurat对象。
+```{r}
+set.seed(123)
+seu_harmony <- seu1 %>%
+  RunHarmony(group.by.vars = c('sample'), reduction.use = "pca", dims.use = 1:30) %>%
+  RunUMAP(reduction = "harmony", dims = 1:30,n.neighbors =10, min.dist=0.1) %>% 
+  FindNeighbors(reduction = "harmony", dims = 1:30) %>%
+  FindClusters(resolution =  seq(0.1,0.5,0.1))
+seu_harmony$disease <- factor(seu_harmony$disease,levels = c( "Normal", "LUAD","SCLC"))
+qs::qsave(seu_harmony,file.path(output_3,'3_umap_n10_d0.1_harmony_markdoublet_filtered3_47402_LUAD1W_SCLC3W_norm1W_epi_HLCA_HTAN_LuCA_GSE131907_250701.qs'))
+
+```
+
+2.2 绘制相应的umap图
+```{r}
+c1 <- CellDimPlot(seu_harmony, group.by = "RNA_snn_res.0.1", 
+                  reduction = "UMAP", theme_use = "theme_blank",label = T, label_insitu =T )  |
+  CellDimPlot(seu_harmony, group.by = "RNA_snn_res.0.3", 
+                  reduction = "UMAP", theme_use = "theme_blank",label = T, label_insitu =T )  |
+  CellDimPlot(seu_harmony, group.by = "RNA_snn_res.0.5", 
+                  reduction = "UMAP", theme_use = "theme_blank",label = T, label_insitu =T )  |
+  CellDimPlot(seu_harmony, group.by = "paper_ann_1", 
+                  reduction = "UMAP", theme_use = "theme_blank",label = T, label_insitu =T )  |
+  CellDimPlot(seu_harmony, group.by = "disease", 
+              reduction = "UMAP", theme_use = "theme_blank",label = F , label_insitu =T) 
+
+ggsave(file.path(output_3,'CellDimPlot_umap_n10_d0.1_harmony_highQC_47402_filtered_LUAD1W_SCLC3W_norm1W_epi_HLCA_HTAN_LuCA_GSE131907.pdf'),c1,width = 25,height = 5)  
+c2 <- CellDimPlot(seu_harmony, group.by = "RNA_snn_res.0.3", split.by  = "disease",legend.position = 'none',
+                  reduction = "UMAP", theme_use = "theme_blank")  
+ggsave(file.path(output_3,'CellDimPlot_res03_bydisease_umap_n10_d0.1_harmony_highQC_47402_filtered_LUAD1W_SCLC3W_norm1W_epi_HLCA_HTAN_LuCA_GSE131907.pdf'),c2,width = 12,height = 4)  
+
+# 获取细胞分组和disease信息
+c3 <- CellStatPlot(srt = seu_harmony, stat.by = "disease", group.by = "RNA_snn_res.0.3", label = F)
+ggsave(file.path(output_3,"CellStatPlot_res03_bydisease_umap_n10_d0.1_harmony_highQC_47402_filtered_LUAD1W_SCLC3W_norm1W_epi_HLCA_HTAN_LuCA_GSE131907.pdf"), c3, width = 10, height = 6)
+gc()
+```
+2.3 绘制数据来源的dimplot
+```{r}
+c4 <- CellDimPlot(sc, group.by = "dataset",reduction = "UMAP", theme_use = "theme_blank",label = F, label_insitu =T ) 
+ggsave(file.path(output_3,"CellDimPlot_dataset_umap_n10_d0.1_harmony_highQC_47402_filtered_LUAD1W_SCLC3W_norm1W_epi_HLCA_HTAN_LuCA_GSE131907.pdf"), c4, width = 7, height = 6)
+
+```
+
+
+**以下DEGs流程此处不运行，测试时已经运行，对后续结果影响不大，主要是为了确定每个Cluster是否是某一确定的细胞类型**
+3 对res0.3进行findallmarkers,查看不同cluster的top markers
+```{r}
+output_DEGs <- file.path(output_3,'DEGs')
+dir.create(output_DEGs)
+seu_harmony <- RunDEtest(srt = seu_harmony, group_by = "RNA_snn_res.0.3", fc.threshold = 1, only.pos = FALSE)
+```
+火山图展示DEGs
+```{r fig.height=20, fig.width=6}
+v1 <- VolcanoPlot(srt = seu_harmony, DE_threshold = "avg_log2FC > 1 & p_val_adj < 0.05",
+                  pt.size = 0.01,nlabel = 10,
+                  group_by = "RNA_snn_res.0.3",ncol = 4)+NoLegend()
+ggsave(file.path(output_3,"VolcanoPlot_DEGs_res03_umap_n10_d0.1_harmony_highQC_47402_filtered_LUAD1W_SCLC3W_norm1W_epi_HLCA_HTAN_LuCA_GSE131907.pdf"), v1, width = 20, height = 18)
+```
+热图展示DEGs
+```{r}
+DEGs <- seu_harmony@tools$DEtest_RNA_snn_res.0.3$AllMarkers_wilcox
+DEGs <- DEGs[with(DEGs, avg_log2FC > 1 & p_val_adj < 0.05), ]
+write.csv(DEGs, file = file.path(output_DEGs,"all_markers_SCP_DEGs_res03.csv"))
+top30_res03 = DEGs %>% group_by(group1) %>% top_n(n = 30, wt = avg_log2FC)
+write.csv(top30_res03, file = file.path(output_DEGs, "top30_markers_SCP_DEGs_res03.csv"))
+top100_res03 = DEGs %>% group_by(group1) %>% top_n(n = 100, wt = avg_log2FC)
+write.csv(top100_res03, file = file.path(output_DEGs, "top100_SCP_DEGs_res03.csv"))
+top10_res03 = DEGs %>% group_by(group1) %>% top_n(n = 10, wt = avg_log2FC)
+write.csv(top10_res03, file = file.path(output_DEGs, "top10_markers_SCP_DEGs_res03.csv"))
+```
+```{r}
+# Annotate features with transcription factors and surface proteins
+seu_harmony <- AnnotateFeatures(seu_harmony, species = "Homo_sapiens", db = c("TF", "CSPA"))
+ht <- FeatureHeatmap(
+  srt = seu_harmony, group.by = "RNA_snn_res.0.3", features = top100_res03$gene, feature_split = top100_res03$group1,
+  species = "Homo_sapiens",# db = c("GO_BP", "KEGG", "WikiPathway"), anno_terms = TRUE,
+  #feature_annotation = c("TF", "CSPA"), feature_annotation_palcolor = list(c("gold", "steelblue"), c("forestgreen")),
+  height = 8, width = 4
+)
+print(ht$plot)
+ggsave(file.path(output_DEGs,'FeatureHeatmap_res03_DEGs_47402_filtered_LUAD1W_SCLC3W_norm1W_epi_HLCA_HTAN_LuCA_GSE131907.pdf'),width=8,height = 10)
+```
+
+传统差异分析方法
+```{r}
+##################差异分析
+Idents(seu_harmony) <- "RNA_snn_res.0.3"
+markers <- FindAllMarkers(object = seu_harmony , test.use="wilcox" ,
+                          only.pos = F,
+                          logfc.threshold = 0.25)   
+all_markers_res03 =markers %>% dplyr::select(gene, everything()) %>% subset(p_val<0.05)
+write.csv(all_markers_res03, file = file.path(output_DEGs,"all_markers_res03.csv"))
+top30_res03 = all_markers_res03 %>% group_by(cluster) %>% top_n(n = 30, wt = avg_log2FC)
+write.csv(top30_res03, file = file.path(output_DEGs, "top30_markers_res03.csv"))
+top100_res03 = all_markers_res03 %>% group_by(cluster) %>% top_n(n = 100, wt = avg_log2FC)
+write.csv(top100_res03, file = file.path(output_DEGs, "top100_res03.csv"))
+top10_res03 = all_markers_res03 %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+write.csv(top10_res03, file = file.path(output_DEGs, "top10_markers_res03.csv"))
+
+```
+画图
+```{r fig.height=8, fig.width=7}
+ht <- FeatureHeatmap(
+  srt = seu_harmony, group.by = "RNA_snn_res.0.3", split.by = 'disease',features = top10_res03$gene, feature_split = top10_res03$cluster,
+  species = "Homo_sapiens", height = 5, width = 3)
+print(ht$plot)
+```
+
+
+**上述DEGs流程测试时运行过，对后续结果影响不大，此处不再运行**
+**针对上述分群及cluster的top markers，去除混杂的小群，只保留0,1,2这三个病理类型的大群，3,4都是SCLC的群，先不保留，若有需要再加入。7,8,9,13作为SCLC的小群，也暂时排除**
+**6,11,12,14,15这几个小群，查看top markers含有较多间质、免疫细胞的markers，考虑为混杂细胞，排除。3这个群有较多的doublet细胞，考虑是一个混合的群**
+4只提取0,1,2这三个病理类型的大群，10也加进去，距离比较靠近。继续进行下游分析。
+```{r}
+sce <- subset(seu_harmony,RNA_snn_res.0.3 %in% c(0:2,10))
+sce$RNA_snn_res.0.3 <- droplevels(sce$RNA_snn_res.0.3)
+dim(sce)
+table(sce$disease)
+table(sce$paper_ann_1,sce$disease)
+```
+
+```{r}
+qs::qsave(sce,file.path(output_3,'4_AT2_LUAD_SCLC_29127_epi_HLCA_HTAN_LuCA_GSE131907.qs'))
+```
+
+
+
+
+
+
+
+
+
+

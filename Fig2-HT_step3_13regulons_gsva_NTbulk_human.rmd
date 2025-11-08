@@ -1,0 +1,527 @@
+---
+title: "Fig2_step3_13regulons_gsva_NTbulk_human"
+author: "tang"
+date: "2025-07-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = here::here())
+```
+
+1 加载所需要的R包，设置文件目录
+```{r}
+Sys.setenv(LANGUAGE = "en")
+library(GSVA)
+library(GSEABase)
+library(limma)
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(ggpubr)
+library(ggsci)
+
+source('/home/data/tmh_project/SCLC/source_global/write_read_gmt.R')
+
+output_1 <- '3_13regulon_gsva'
+dir.create(output_1)
+Rscripts_dir <- '/home/data/tmh_project/SCLC/Fig2_NTbulk_human/Rscripts'
+```
+
+2 读取48个样本的临床信息,按分组顺序排列
+```{r}
+# # 定义自定义排序
+# cluster_48$group <- factor(cluster_48$group, 
+#                            levels = c("C_LUAD", "T_LUAD", "T_SCLC", "C_SCLC"))
+cluster_48 <- read.csv('1_NTbulkdata_E-MTAB-10399/metadata_all_48samples_sorted.csv',row.names = 1, header=T,sep = ",", quote = "\"")
+```
+
+3 运行将13个regulon list运行gsva
+```{r}
+source(file.path(Rscripts_dir,'4_run_gsva_analysis.R'))
+geneset_file <- "/home/data/tmh_project/SCLC/Fig2_NTbulk_human/regulon13_human_v1.gmt"
+
+# 批量分析多个数据集
+datasets <- list(
+  exp_48 = "1_NTbulkdata_E-MTAB-10399/GeneFPKM_new.csv"
+)
+
+results <- list()
+for(name in names(datasets)) {
+  cat("\n处理数据集:", name, "\n")
+  results[[name]] <- run_gsva_analysis(
+    exp_file = datasets[[name]],
+    geneset_file = geneset_file,
+    output_prefix = file.path(output_1,name),
+    verbose = TRUE
+  )
+}
+
+```
+
+4 对48个样本的信息匹配检查
+```{r}
+gene_regulon_48=t(results$exp_48$ssgsea_result)
+#cbind不是按照行名进行合并的，默认两个数据表格的顺序完全一致，直接合并。要检查行名的顺序，还需match
+# 确保exp_48与cluster_48的行名顺序一致，以cluster_48的行名顺序为主，调整过顺序，使分组对比看更清晰
+matched_gene_regulon_48 <- gene_regulon_48[match(rownames(cluster_48), rownames(gene_regulon_48)), ]
+# 检查排序是否正确
+if (all(rownames(matched_gene_regulon_48) == rownames(cluster_48))) {
+  # 合并数据框
+  data_regulon_48 <- cbind(matched_gene_regulon_48, cluster_48)
+} else {
+  stop("行名排序不一致，请检查数据框的行名")
+}
+```
+
+5 绘制箱线图
+```{r}
+# 绘制普通的箱线图
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggsci)
+library(ggpubr)
+
+data <- as.data.frame(data_regulon_48)
+# 将前64列的数据从宽格式转换为长格式
+data_long <- data %>%
+  pivot_longer(cols = 1:13, names_to = "Type", values_to = "Expression") %>%
+  select(Type, Expression, group) %>%
+  mutate(Type = factor(Type, levels = colnames(data)[1:13]),
+         group = factor(group, levels = c("C_LUAD", "T_LUAD", "T_SCLC", "C_SCLC")))
+
+#comparisons只对比最关注的三个组间差异
+comparisons_1 <- list(
+  c("C_LUAD", "T_LUAD"),
+  c("C_SCLC", "T_SCLC"),
+  c("T_LUAD", "T_SCLC")
+)
+
+g1 <- ggplot(data_long, aes(x = group, y = Expression, fill = group)) +
+  geom_boxplot(outlier.colour = "transparent", alpha = 0.7) +
+  facet_wrap(~ Type, scales = 'free_y', ncol = 5) +
+  scale_fill_manual(values = c("C_LUAD" = "#ADB6CA", "T_LUAD" = "#FDAF91", 
+                               "C_SCLC" = "#00468B", "T_SCLC" = "#ED0000")) +
+  scale_color_manual(values = c("C_LUAD" = "#ADB6CA", "T_LUAD" = "#FDAF91", 
+                               "C_SCLC" = "#00468B", "T_SCLC" = "#ED0000")) +
+  theme_classic(base_size = 14) +
+  xlab('Group') +
+  ylab('Expression') +
+  theme(axis.text.x = element_text(size=0),
+        strip.text = element_text(size = 12), face = "bold") +
+  stat_compare_means(comparisons = comparisons_1, 
+                     method = "t.test", label = "p.signif", hide.ns = TRUE, vjust = 0.6)
+
+ggsave(file.path(output_1,'geom_boxplot_v1_gsva_48samples_13regulons.pdf'), g1, width = 12, height = 6)
+
+```
+
+6 绘制过滤后的13个regulon不同版本的热图。
+```{r}
+library(pheatmap)
+library(RColorBrewer)
+library(ggsci)
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(viridis)
+library(cowplot)
+library(gridExtra)
+
+# 只保留group、Sample、sex列作为注释信息
+Type_regulon <- data_regulon_48[, c("group", "Sample", "sex")]
+
+# 按照箱线图设置的顺序 - 取前13列作为regulon数据
+data_48 <- t(data_regulon_48[, 1:13])
+
+# 设置因子顺序 - 按照箱线图的设置
+group_order <- c("C_LUAD", "T_LUAD", "T_SCLC", "C_SCLC")
+regulon_order <- colnames(data_regulon_48)[1:13]  # 按照原始数据列顺序
+
+# 设置因子
+Type_regulon$group <- factor(Type_regulon$group, levels = group_order)
+
+# 按照group顺序排序Type_regulon
+Type_regulon <- Type_regulon %>%
+  arrange(group)
+
+# 设置regulon（行）的顺序 - 按照指定顺序
+data_48 <- data_48[regulon_order, ]
+
+# 同时调整data_48的列顺序与Type_regulon的行顺序一致
+data_48 <- data_48[, rownames(Type_regulon)]
+
+# 根据排序后的group分组计算分隔线位置
+group_counts <- table(Type_regulon$group)
+cumulative_counts <- cumsum(group_counts)
+gaps_positions <- cumulative_counts[-length(cumulative_counts)]  # 除了最后一个
+
+print("排序后分组计数:")
+print(group_counts)
+print("分隔线位置:")
+print(gaps_positions)
+
+# 根据实际数据值设置颜色
+group_colors <- c("C_LUAD" = "#ADB6CA", "T_LUAD" = "#FDAF91", 
+                  "C_SCLC" = "#00468B", "T_SCLC" = "#ED0000")
+
+# 性别颜色设置 - 使用lancet配色
+sex_colors <- c("male" = "#42A5F5", "female" = "#FFA726")
+
+# Sample颜色设置 - 为每个样本生成不同颜色
+unique_samples <- unique(Type_regulon$Sample)
+sample_colors <- rainbow(length(unique_samples))
+names(sample_colors) <- unique_samples
+
+# 创建注释颜色列表
+ann_colors <- list(group = group_colors, 
+                   sex = sex_colors,
+                   Sample = sample_colors)
+
+# 设置颜色断点
+bk = unique(c(seq(-5,5, length=100)))
+lancet_colors <- colorRampPalette(c("#00468B", "white", "#ED0000"))(100)
+
+# ========== ggplot2分面热图 ==========
+# 准备ggplot数据
+data_48_scaled <- t(scale(t(log2(data_48+1))))  # 行标准化
+data_long <- melt(data_48_scaled)
+colnames(data_long) <- c("Regulon", "Sample", "Expression")
+
+# 添加分组信息
+data_long$Group <- Type_regulon[data_long$Sample, "group"]
+data_long$Sex <- Type_regulon[data_long$Sample, "sex"]
+
+# 确保因子顺序 - 与pheatmap保持一致
+data_long$Group <- factor(data_long$Group, levels = group_order)
+data_long$Regulon <- factor(data_long$Regulon, levels = rev(regulon_order))  # 使用regulon_order
+data_long$Sample <- factor(data_long$Sample, levels = rownames(Type_regulon))
+
+
+# ========== 分面热图 - 配色与pheatmap保持一致 ==========
+p <- ggplot(data_long,
+            aes(x = Sample, y = Regulon, fill = Expression)) +
+  geom_tile(color = "white", size = 0.1) +
+  scale_fill_gradient2(low   = "#00468B",
+                       mid   = "white",
+                       high  = "#ED0000",
+                       midpoint = 0,
+                       name  = "Expression\n(Z-score)") +
+  facet_grid(. ~ Group,
+             scales = "free_x",
+             space  = "free_x") +
+  theme_minimal() +
+  theme(
+    # 去掉 x 轴所有文字
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    axis.ticks.x = element_blank(),
+
+    # 其余保持原样
+    axis.text.y = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    legend.title = element_text(size = 10),
+    legend.text  = element_text(size = 9),
+    panel.grid   = element_blank(),
+    plot.title   = element_text(size = 14, hjust = 0.5),
+    strip.text   = element_text(size = 12),
+    strip.background = element_rect(fill = "lightgray"),
+    legend.position = "right"
+  ) +
+  labs(title = "Regulon Expression by Group (Faceted Heatmap)",
+       y = "Transformation-Associated Regulons")
+ggsave(file.path(output_1,'ggplot_faceted_heatmap_final_gsva_48samples_13regulons.pdf'), p, width = 6, height = 3)
+
+# p <- ggplot(data_long, aes(x = Sample, y = Regulon, fill = Expression)) +
+#   geom_tile(color = "white", size = 0.1) +
+#   scale_fill_gradient2(low = "#00468B", mid = "white", high = "#ED0000", 
+#                        midpoint = 0, name = "Expression\n(Z-score)") +  # 与pheatmap保持一致的配色
+#   facet_grid(. ~ Group, scales = "free_x", space = "free_x") +
+#   theme_minimal() +
+#   theme(
+#     axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 12),
+#     axis.text.y = element_text(size = 12),
+#     axis.title = element_text(size = 12),
+#     legend.title = element_text(size = 10),
+#     legend.text = element_text(size = 9),
+#     panel.grid = element_blank(),
+#     plot.title = element_text(size = 14, hjust = 0.5),
+#     strip.text = element_text(size = 12),
+#     strip.background = element_rect(fill = "lightgray"),
+#     legend.position = "right"
+#   ) +
+#   labs(title = "Regulon Expression by Group (Faceted Heatmap)",
+#        x = "Samples", y = "Transformation-Associated Regulons")
+# 
+# # 保存ggplot分面版本热图
+# ggsave(file.path(output_1,'ggplot_faceted_heatmap_final_gsva_48samples_13regulons.pdf'), p, width = 6, height = 4)
+
+```
+
+20250930补充绘图，绘制13个TFs的基因表达值情况。
+```{r}
+# 设置输出目录
+output_1 <- '3_13regulon_gsva'
+dir.create(output_1, showWarnings = FALSE)
+
+# 读取数据
+cluster_48 <- read.csv('1_NTbulkdata_E-MTAB-10399/metadata_all_48samples_sorted.csv',
+                       row.names = 1, header = T, sep = ",", quote = "\"")
+exp_48_data <- read.csv("1_NTbulkdata_E-MTAB-10399/GeneFPKM_new.csv", 
+                        row.names = 1, header = T, sep = ",", quote = "\"")
+
+# 定义13个转录因子
+TFs_13 <- c("E2F8", "FOXM1", "HDAC2", "MYBL2", "NFYB", "PHF20", 
+            "PKNOX1", "TFDP1", "ELF1", "ELF5", "ETV1", "MAFB", "ZNF467")
+
+# 确保样本名一致并提取目标基因数据
+common_samples <- intersect(colnames(exp_48_data), rownames(cluster_48))
+exp_subset <- exp_48_data[TFs_13, common_samples]
+metadata_subset <- cluster_48[common_samples, , drop = FALSE]
+
+# 确保group列存在并设置因子水平
+if(!"group" %in% colnames(metadata_subset)) {
+  stop("metadata中没有找到'group'列，请检查列名")
+}
+
+group <- factor(metadata_subset$group, 
+                levels = c("C_LUAD", "T_LUAD", "T_SCLC", "C_SCLC"))
+
+# 定义颜色
+group_colors <- c("C_LUAD" = "#ADB6CA", "T_LUAD" = "#FDAF91", 
+                  "C_SCLC" = "#00468B", "T_SCLC" = "#ED0000")
+
+# 数据预处理：log2转换和Z-score标准化
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+# log2转换（如果数据还未转换）
+exp_log2 <- log2(exp_subset + 1)
+
+# Z-score标准化（按行）
+exp_zscore <- t(scale(t(exp_log2)))
+
+# 转换为长格式数据用于ggplot
+data_long <- exp_zscore %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Regulon") %>%
+  pivot_longer(cols = -Regulon, 
+               names_to = "Sample", 
+               values_to = "Expression") %>%
+  mutate(
+    # 直接从metadata_subset中获取group信息
+    Group = factor(metadata_subset[Sample, "group"], 
+                   levels = c("C_LUAD", "T_LUAD", "T_SCLC", "C_SCLC")),
+    Regulon = factor(Regulon, levels = rev(TFs_13))
+  ) %>%
+  arrange(Group, Sample)
+
+# 按组排序样本
+data_long <- data_long %>%
+  arrange(Group, Sample)
+
+# 创建分面热图
+p <- ggplot(data_long, aes(x = reorder(Sample, as.numeric(Group)), 
+                           y = Regulon, fill = Expression)) +
+  geom_tile(color = "white", size = 0.1) +
+  scale_fill_gradient2(low = "#00468B",
+                       mid = "white",
+                       high = "#ED0000",
+                       midpoint = 0,
+                       name = "Expression\n(Z-score)",
+                       limits = c(-3, 3)) +
+  facet_grid(. ~ Group,
+             scales = "free_x",
+             space = "free_x") +
+  theme_minimal() +
+  theme(
+    # 去掉 x 轴所有文字
+    axis.text.x = element_blank(),
+    axis.title.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    # y轴设置
+    axis.text.y = element_text(size = 10),
+    axis.title.y = element_text(size = 10),
+    # 图例设置
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 9),
+    legend.position = "right",
+    # 面板设置
+    panel.grid = element_blank(),
+    panel.spacing = unit(0.1, "lines"),
+    # 标题设置
+    plot.title = element_text(size = 14, hjust = 0.5),
+    # 分面标签设置
+    strip.text = element_text(size = 12, face = "bold"),
+    strip.background = element_rect(fill = "lightgray", color = "black")
+  ) +
+  labs(title = "13 TFs Expression by Group",
+       y = "Regulons")
+
+
+# 保存图片
+ggsave(file.path(output_1, '13TF_ggplot_faceted_heatmap_48samples.pdf'), 
+       p, width = 5, height = 3, dpi = 300)
+
+# 额外：保存传统热图版本（使用pheatmap）
+library(pheatmap)
+
+# 简洁版本 - 直接排序
+group_order <- c("C_LUAD", "T_LUAD", "T_SCLC", "C_SCLC")
+
+# 按分组排序样本索引
+ordered_samples <- order(match(group, group_order))
+
+# 重新排列数据
+exp_zscore_ordered <- exp_zscore[, ordered_samples]
+annotation_col <- data.frame(
+  Group = factor(group[ordered_samples], levels = group_order),
+  row.names = colnames(exp_zscore_ordered)
+)
+
+# 绘制热图
+pheatmap(exp_zscore_ordered,
+         annotation_col = annotation_col,
+         annotation_colors = list(Group = group_colors),
+         cluster_rows = FALSE,
+         cluster_cols = FALSE,
+         show_colnames = FALSE,
+         fontsize = 10,
+         fontsize_row = 12,
+         color = colorRampPalette(c("#00468B", "white", "#ED0000"))(100),
+         filename = file.path(output_1, '13TF_pheatmap_48samples.pdf'),
+         width = 5,
+         height = 3)
+
+```
+
+
+
+
+
+
+
+
+以下不再运行。测试用。
+```{r}
+# ========== pheatmap版本 1: 完整注释 ==========
+p1 <- pheatmap(log2(data_48+1),
+               breaks = bk,
+               annotation_col = Type_regulon[, c("group", "sex", "Sample")],  # 包含Sample列
+               annotation_colors = ann_colors,
+               color = lancet_colors,
+               cluster_cols = FALSE,  # 不聚类列，保持排序
+               cluster_rows = FALSE,  # 不聚类行，保持原始顺序
+               scale = "row",
+               show_colnames = TRUE,
+               fontsize = 8,
+               fontsize_row = 12,
+               #fontsize_col = 12,
+               angle_col = 90,  # 修改为pheatmap接受的值
+               gaps_col = gaps_positions,
+               main = "Regulon Expression Heatmap (Complete Annotation)")
+
+# 保存热图
+ggsave(file.path(output_1,'pheatmap_v1_gsva_48samples_13regulons.pdf'), p1, width = 12, height =10)
+
+# ========== pheatmap版本 2: 简化注释 ==========
+ann_colors_simple <- list(group = group_colors, 
+                          sex = sex_colors)
+
+p2 <- pheatmap(log2(data_48+1),
+               breaks = bk,
+               annotation_col = Type_regulon[, c("group", "sex")],  # 只包含group和sex列
+               annotation_colors = ann_colors_simple,
+               color = lancet_colors,
+               cluster_cols = FALSE,  # 不聚类列，保持排序
+               cluster_rows = FALSE,  # 不聚类行，保持原始顺序
+               scale = "row",
+               show_colnames = TRUE,
+               fontsize = 8,
+               fontsize_row = 10,
+               #fontsize_col = 12,
+               angle_col = 90,  # 修改为pheatmap接受的值
+               gaps_col = gaps_positions,
+               main = "Regulon Expression Heatmap (Group & Sex)")
+
+# 保存简化版热图
+ggsave(file.path(output_1,'pheatmap_v2_gsva_48samples_13regulons.pdf'), p2, width = 10, height = 5)
+
+# ========== ggplot2分面热图 ==========
+# 准备ggplot数据
+data_48_scaled <- t(scale(t(log2(data_48+1))))  # 行标准化
+data_long <- melt(data_48_scaled)
+colnames(data_long) <- c("Regulon", "Sample", "Expression")
+
+# 添加分组信息
+data_long$Group <- Type_regulon[data_long$Sample, "group"]
+data_long$Sex <- Type_regulon[data_long$Sample, "sex"]
+
+# 确保因子顺序 - 与pheatmap保持一致
+data_long$Group <- factor(data_long$Group, levels = group_order)
+data_long$Regulon <- factor(data_long$Regulon, levels = regulon_order)  # 使用regulon_order
+data_long$Sample <- factor(data_long$Sample, levels = rownames(Type_regulon))
+
+# ========== 分面热图 - 配色与pheatmap保持一致 ==========
+p3 <- ggplot(data_long, aes(x = Sample, y = Regulon, fill = Expression)) +
+  geom_tile(color = "white", size = 0.1) +
+  scale_fill_gradient2(low = "#00468B", mid = "white", high = "#ED0000", 
+                       midpoint = 0, name = "Expression\n(Z-score)") +  # 与pheatmap保持一致的配色
+  facet_grid(. ~ Group, scales = "free_x", space = "free_x") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 7),
+    axis.text.y = element_text(size = 10),
+    axis.title = element_text(size = 12),
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 9),
+    panel.grid = element_blank(),
+    plot.title = element_text(size = 14, hjust = 0.5),
+    strip.text = element_text(size = 10, face = "bold"),
+    strip.background = element_rect(fill = "lightgray"),
+    legend.position = "right"
+  ) +
+  labs(title = "Regulon Expression by Group (Faceted Heatmap)",
+       x = "Samples", y = "Regulons")
+
+# 保存ggplot分面版本热图
+ggsave(file.path(output_1,'ggplot_faceted_heatmap_v3_gsva_48samples_13regulons.pdf'), p3, 
+       width = 11, height = 5, dpi = 300)
+
+# ========== 分面热图 - 配色与pheatmap保持一致 ==========
+p3 <- ggplot(data_long, aes(x = Sample, y = Regulon, fill = Expression)) +
+  geom_tile(color = "white", size = 0.1) +
+  scale_fill_gradient2(low = "#00468B", mid = "white", high = "#ED0000", 
+                       midpoint = 0, name = "Expression\n(Z-score)") +  # 与pheatmap保持一致的配色
+  facet_grid(. ~ Group, scales = "free_x", space = "free_x") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 7),
+    axis.text.y = element_text(size = 10),
+    axis.title = element_text(size = 12),
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 9),
+    panel.grid = element_blank(),
+    plot.title = element_text(size = 14, hjust = 0.5),
+    strip.text = element_text(size = 10, face = "bold"),
+    strip.background = element_rect(fill = "lightgray"),
+    legend.position = "right"
+  ) +
+  labs(title = "Regulon Expression by Group (Faceted Heatmap)",
+       x = "Samples", y = "Regulons")
+
+# 保存ggplot分面版本热图
+ggsave(file.path(output_1,'ggplot_faceted_heatmap_v3_gsva_48samples_13regulons.pdf'), p3, 
+       width = 11, height = 5, dpi = 300)
+```
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,289 @@
+---
+title: "Fig3_step4_bulk_correlation_reduction"
+author: "tang"
+date: "2025-08-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = here::here())
+```
+
+1. 加载必要的包，设置路径
+```{r}
+library(Seurat)
+library(edgeR)
+library(qs)
+library(ggplot2)
+library(cowplot)
+library(stats)
+library(SCP)
+library(dplyr)
+```
+
+NT_bulk用TMM+log2CPM+zscore，TCGA/OAK/POPLAR用log2(TPM+0.1)+zscore，ONCOSG直接zscore。
+只要最后一步都做了z-score标准化（按基因/行），批次/测序/平台的绝对量级差异会被消除，剩下的就是表达模式的相对变化。
+这种做法在跨平台/跨队列bulk分析中是主流做法，可以最大程度减少技术误差的影响。
+2. 实际影响
+z-score标准化后，表达值只反映“在本基因内各样本的高低”，不再反映绝对表达量。
+只要z-score前的矩阵是“表达量可比的”（如TPM、log2CPM），z-score后就可以直接比较。
+TMM+log2CPM和log2(TPM+0.1)本质上都是消除测序深度/基因长度的标准化方法，z-score后差异进一步被消除。
+
+NT_bulk数据：
+counts：原始计数矩阵（去重后）
+data：TMM+log2CPM后再zscore标准化的矩阵
+TCGA数据：
+counts：原始FPKM矩阵（去重后）
+data：TMM+log2CPM后再zscore标准化的矩阵
+OAK/POPLAR数据：
+counts：原始TPM矩阵（去重后）
+data：log2(TPM+0.1)后再zscore标准化的矩阵
+ONCOSG数据：
+counts：原始矩阵（去重后）
+data：清理后的zscore矩阵 
+
+2. 读取bulk数据，进行标准化，生成seurat对象。NT_bulk/TCGA/ONCOSG/OAK/POPLAR这几个bulk数据
+```{r}
+source('Rscripts/Fig3_step3_bulk_genefiltered_normalize.R')
+output <- "4_bulk_correlation"
+  if(!dir.exists(output)) {
+    dir.create(output, showWarnings = FALSE, recursive = TRUE)
+  }
+
+# 主函数修改
+main <- function( ) {
+  # 1. NT_bulk
+  seurat_nt <- deal_nt_bulk(
+    "/home/data/tmh_project/SCLC/Fig2_NTbulk_human/1_NTbulkdata_E-MTAB-10399/GeneCounts_new.csv",
+    "/home/data/tmh_project/SCLC/Fig2_NTbulk_human/1_NTbulkdata_E-MTAB-10399/metadata_all_48samples_sorted.csv"
+  )
+  # 保存标准化后的NT_bulk对象
+  qsave(seurat_nt, file.path(output,"NT_bulk_standardized.qs"))
+  
+  # 2. TCGA
+  clustering_output <- readRDS('1_TCGA/ssgsea/clustering_output_complete.rds')
+  exp_tcga <- read.csv('0_Fig3_cohort_data/1_TCGA_LUAD/LUAD_fpkm_new.csv', row.names = 1)
+  meta_tcga <- clustering_output$cluster_results$hierarchical
+  meta_tcga <- data.frame(cluster = meta_tcga$cluster, row.names = rownames(meta_tcga))
+  seurat_tcga <- deal_tcga_bulk(exp_tcga, meta_tcga)
+  # 保存标准化后的TCGA对象
+  qsave(seurat_tcga,file.path(output,"TCGA_standardized.qs"))
+  
+  # 3. OAK+POPLAR
+  predictions_OAK <- readRDS('3_predictions/OAK_POPLAR/ssgsea/hierarchical/knn/predictions_knn.rds')
+  exp_oak <- predictions_OAK$expression_matrix
+  meta_oak <- data.frame(cluster = predictions_OAK$class, row.names = names(predictions_OAK$class))
+  seurat_oak <- deal_tpm_bulk(exp_oak, meta_oak, "OAK_POPLAR")
+  # 保存标准化后的OAK对象
+  qsave(seurat_oak, file.path(output,"OAK_POPLAR_standardized.qs"))
+  
+  # # 4. POPLAR
+  # predictions_POPLAR <- readRDS('3_predictions/POPLAR/ssgsea/kmeans/knn/predictions_knn.rds')
+  # exp_poplar <- predictions_POPLAR$expression_matrix
+  # meta_poplar <- data.frame(cluster = predictions_POPLAR$class, row.names = names(predictions_POPLAR$class))
+  # seurat_poplar <- deal_tpm_bulk(exp_poplar, meta_poplar, "POPLAR")
+  # # 保存标准化后的POPLAR对象
+  # qsave(seurat_poplar, file.path(output,"POPLAR_standardized.qs"))
+  
+  # 5. ONCOSG
+  predictions_ONCOSG <- readRDS('3_predictions/ONCOSG/ssgsea/hierarchical/knn/predictions_knn.rds')
+  exp_oncosg <- predictions_ONCOSG$expression_matrix
+  meta_oncosg <- data.frame(cluster = predictions_ONCOSG$class, row.names = names(predictions_ONCOSG$class))
+  seurat_oncosg <- deal_oncosg(exp_oncosg, meta_oncosg)
+  # 保存标准化后的ONCOSG对象
+  qsave(seurat_oncosg, file.path(output,"ONCOSG_standardized.qs"))
+  
+  # 找到所有数据集的共同基因
+  common_genes <- Reduce(intersect, list(
+    rownames(seurat_tcga[["RNA"]]@data),
+    rownames(seurat_oak[["RNA"]]@data),
+    #rownames(seurat_poplar[["RNA"]]@data),
+    rownames(seurat_oncosg[["RNA"]]@data)
+  ))
+  cat("四个bulk数据集共同基因数：", length(common_genes), "\n")
+  
+  # 只保留共同基因并保持data矩阵
+  seurat_tcga_data <- seurat_tcga[["RNA"]]@data[common_genes,]
+  seurat_oak_data <- seurat_oak[["RNA"]]@data[common_genes,]
+  #seurat_poplar_data <- seurat_poplar[["RNA"]]@data[common_genes,]
+  seurat_oncosg_data <- seurat_oncosg[["RNA"]]@data[common_genes,]
+  
+  seurat_tcga <- subset(seurat_tcga, features = common_genes)
+  seurat_oak <- subset(seurat_oak, features = common_genes)
+  #seurat_poplar <- subset(seurat_poplar, features = common_genes)
+  seurat_oncosg <- subset(seurat_oncosg, features = common_genes)
+  
+  # 重新设置data矩阵
+  seurat_tcga[["RNA"]]@data <- seurat_tcga_data
+  seurat_oak[["RNA"]]@data <- seurat_oak_data
+  #seurat_poplar[["RNA"]]@data <- seurat_poplar_data
+  seurat_oncosg[["RNA"]]@data <- seurat_oncosg_data
+  
+  # 合并四个bulk数据集
+  sc_4bulk <- merge(seurat_tcga, 
+                    y = list(seurat_oak,#seurat_poplar,
+                             seurat_oncosg))
+  
+  # 合并后重新设置data矩阵
+  merged_data <- cbind(
+    seurat_tcga_data,
+    seurat_oak_data,
+   # seurat_poplar_data,
+    seurat_oncosg_data
+  )
+  
+  # 确保列名顺序与merged对象一致
+  merged_data <- merged_data[, colnames(sc_4bulk)]
+  sc_4bulk[["RNA"]]@data <- merged_data
+  
+  # 找到与NT_bulk的共同基因
+  common_genes_all <- intersect(common_genes, rownames(seurat_nt[["RNA"]]@data))
+  cat("所有数据集共同基因数：", length(common_genes_all), "\n")
+  
+  # 保存NT_bulk的data矩阵
+  seurat_nt_data <- seurat_nt[["RNA"]]@data[common_genes_all,]
+  sc_4bulk_data <- sc_4bulk[["RNA"]]@data[common_genes_all,]
+  
+  # 只保留共同基因
+  seurat_nt <- subset(seurat_nt, features = common_genes_all)
+  sc_4bulk <- subset(sc_4bulk, features = common_genes_all)
+  
+  # 重新设置data矩阵
+  seurat_nt[["RNA"]]@data <- seurat_nt_data
+  sc_4bulk[["RNA"]]@data <- sc_4bulk_data
+  
+  sc_4bulk$orig.ident <- sc_4bulk$orig.ident %>%
+  recode("oak" = "OAK", "poplar" = "POPLAR")
+
+   # 添加组合标签并设置因子水平
+  sc_4bulk$data_cluster <- paste0(sc_4bulk$orig.ident,'_',  sub("^cluster_", "", sc_4bulk$cluster))
+  
+  sc_4bulk$cluster <- factor(sc_4bulk$cluster, levels = c( "cluster_low", "cluster_medium","cluster_high"))
+  sc_4bulk$data_cluster <- factor(sc_4bulk$data_cluster,
+                                  levels = c("TCGA_high",  "OAK_high","POPLAR_high", "ONCOSG_high", 
+                                             "TCGA_medium", "OAK_medium","POPLAR_medium",   "ONCOSG_medium",
+                                             "TCGA_low", "OAK_low","POPLAR_low",  "ONCOSG_low"))
+  seurat_nt$group <- factor(seurat_nt$group,levels = c('C_LUAD','T_LUAD',"T_SCLC","C_SCLC"))
+  
+  # 保存最终结果
+  cat("\n保存最终结果...\n")
+  qsave(seurat_nt, file.path(output,"seurat_nt_bulk_final.qs"))
+  qsave(sc_4bulk, file.path(output,"seurat_4bulk_final.qs"))
+  
+  cat("\n处理完成！\n")
+  
+  # 返回结果
+  list(seurat_nt = seurat_nt, sc_4bulk = sc_4bulk)
+}
+
+# 运行主函数
+result <- main() 
+```
+
+table(sc_4bulk$orig.ident,sc_4bulk$cluster)
+        
+         cluster_high cluster_low cluster_medium
+  oak             110         130            269
+  ONCOSG           46          47             76
+  poplar           25          23             72
+  TCGA            117         143            253
+  
+```{r}
+sc_4bulk <- result$sc_4bulk
+seurat_nt <- result$seurat_nt
+```
+
+3 绘制热图
+```{r}
+ht1 <- CellCorHeatmap(
+  srt_query = sc_4bulk,
+  srt_ref = sc_4bulk,
+  query_group = "data_cluster",
+  ref_group = "data_cluster",
+  query_assay = NULL,
+  ref_assay = NULL,
+  #features = common_features,
+  query_dims = 1:30,
+  ref_dims = 1:30,
+  features_type = c("HVF"),
+  feature_source = "both",
+  nfeatures = 1200,
+  distance_metric = "cosine",
+  query_group_palette = "Paired",
+  ref_group_palette = "Paired",
+  k = 30,
+  label_cutoff = 0.7,
+  nlabel = 10,
+  label_size = 12,
+  #label_by = "row",
+  column_names_rot = 30,
+  row_names_rot = 0,
+  show_row_names = TRUE,
+  show_column_names = TRUE
+)
+ggsave(file.path(output,'CellCorHeatmap_bydata_cluster_TCGA_OAK_POPLAR_ONCOSG.pdf'),ht1$plot, width = 10, height =6)
+```
+
+```{r}
+# 配色盘：mako
+ht2 <- CellCorHeatmap(
+  srt_query = sc_4bulk,
+  srt_ref = seurat_nt,
+  heatmap_palette = 'RdBu',
+  query_group = "data_cluster",
+  ref_group = "group",
+  #features = common_features,
+  query_dims = 1:30,
+  ref_dims = 1:30,
+  features_type = c("HVF"),
+  feature_source = "both",
+  nfeatures = 1200,
+  distance_metric = "cosine", #"cosine", "pearson", "spearman", "correlation", "jaccard", "ejaccard", "dice", "edice","hamman", "simple matching", "faith"
+  k = 30,
+  label_cutoff = 0.49,
+  nlabel = 10,
+  label_size = 12,
+  #label_by = "row",
+  column_names_rot = 0,
+  row_names_rot = 0,
+  show_row_names = TRUE,
+  show_column_names = TRUE
+)
+ggsave(file.path(output,'CellCorHeatmap_bycluster_TCGA_OAK_POPLAR_ONCOSG_NTbulk.pdf'),ht2$plot, width = 8, height =5)
+```
+
+
+4 只展示high和low两个分组的pca/umap图
+```{r}
+output <- '4_bulk_correlation'
+source('Rscripts/Fig3_step3_4_visualize_v2_pca_umap_only.R')
+#main(sc_4bulk, file.path(output,'sc_4bulk_umap_high_low'))
+
+nt <- subset(seurat_nt,group %in% c("C_LUAD",'T_LUAD','T_SCLC'))
+nt$cluster <- factor(
+  ifelse(nt$group == "C_LUAD",
+         "cluster_low",
+         "cluster_high"),
+  levels = c("cluster_high", "cluster_low")
+)
+
+# 合并后，cluster 列会被自动保留
+sc_5 <- merge(nt, sc_4bulk)
+qs::qsave(sc_5 ,file.path(output,'seurat_5bulk.qs'))
+
+main(sc_5, file.path(output,'sc_5bulk_umap_high_low'))
+
+```
+**三个预测分组的最终图版不绘制**
+4 对4个bulk数据进行降维聚类，查看分群分布情况
+```{r}
+source('Rscripts/34_bulkdata_pca_v2.R')
+sc_4 <- main_analysis(sc_4bulk, file.path(output,'sc_4bulk_pca'))
+ 
+```
+
+
+
+
+
+

@@ -1,0 +1,197 @@
+---
+title: "Fig1_step2_epi_analysis"
+author: "tang"
+date: "2025-08-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = here::here())
+```
+
+1. 加载R包
+```{r}
+library(spatstat.utils, lib.loc = "/usr/local/lib/R/library")
+library(Seurat)
+library(tidyverse)
+library(dplyr)
+library(patchwork)
+library(SCpubr)
+library(harmony)
+library(SingleCellExperiment)
+library(SCP)
+library(scRNAtoolVis)
+```
+
+2 对不同病理状态上皮细胞进行降维聚类分群
+```{r}
+sce_epi <- qs::qread('./data/GSE248202_NTmousemodel_5samples_epi_250618.qs')
+sce_epi$sample <- factor(sce_epi$sample, levels = c("AT2_1mo", "ERPMT_pool", "ERPMT_doxMRD", "ERPMT_3moMRD", "transformed_SCLC"))
+sce_epi$NTstate <- factor(sce_epi$NTstate, levels = c("AT2", "LUAD", "Residual", "Transforming", "Transformed"))
+#线粒体和核糖体基因已经被删除。
+
+sce_epi<- NormalizeData(sce_epi)
+sce_epi <- FindVariableFeatures(sce_epi)
+sce_epi <- ScaleData(sce_epi)
+
+## 计算细胞周期
+# 加载基因名转换包
+library(stringr)
+# 将人类基因名转换为小鼠首字母大写格式
+s.genes.mouse <- str_to_title(cc.genes.updated.2019$s.genes)
+g2m.genes.mouse <- str_to_title(cc.genes.updated.2019$g2m.genes)
+# 查看转换示例（可选）
+head(s.genes.mouse)  # 应该显示"Mcm5","Pcna","Tyms"等
+
+sce_epi <- CellCycleScoring(sce_epi, s.features = s.genes.mouse, g2m.features = g2m.genes.mouse)
+table(sce_epi$Phase)
+
+####################################################################################
+RunFDG <- function(object, reduction, dims = NULL, reduction.name = "fr",
+                   reduction.key = "FDG_", ...) {
+  if (is.null(dims)) {
+    dims <- 1:ncol(Embeddings(object, reduction = reduction))
+  }
+  object <- FindNeighbors(object, reduction = reduction, dims = dims, ...)
+  g <- as(object[["RNA_snn"]], "dgCMatrix")
+  g <- igraph::graph_from_adjacency_matrix(adjmatrix = g,
+                                           mode = "undirected",
+                                           weighted = TRUE,
+                                           add.colnames = TRUE)
+  #set.seed(800)
+  fr.layout <- igraph::layout_with_fr(g)
+  rownames(fr.layout) <- colnames(object)
+  ## store cell embeddings to objectrat
+  object[[reduction.name]] <- CreateDimReducObject(fr.layout, key = reduction.key)
+  return(object)
+}
+
+#800 npc测试运行，选择的这个值
+set.seed(800)
+sce_800 <- sce_epi
+sce_800 <- RunPCA(sce_800, npcs = 800)
+sce_800 <- sce_800 %>%
+  RunFDG(reduction = "pca", dims = 1:800) %>%
+  FindNeighbors(reduction = "pca", dims = 1:800) %>%
+  FindClusters(resolution =  seq(1,2,0.2))
+
+c1 <- CellDimPlot(sce_800, reduction = "fr",label = T,label_insitu =T,
+                  group.by = "NTstate",
+                  raster=FALSE) |
+  CellDimPlot(sce_800, reduction = "fr",label = T,label_insitu =T,
+              group.by = "RNA_snn_res.2",
+              raster=FALSE)
+c2 <- CellDimPlot(sce_800, reduction = "fr",label = F,group.by='NTstate',
+                  split.by = "paper_celltype",ncol = 5,label_insitu =F,
+                  raster=FALSE)
+ggsave(plot=c1,filename = '2_FDG_pca800_NTstate-res2.pdf',width = 15,height = 10)
+ggsave(plot=c2,filename = '2_FDG_pca800_NTstate-paper_celltype.pdf',width = 20,height = 7)
+
+qs::qsave(sce_800,file = '1_GSE248202_epitheial_FDG_pca800_250618.qs')
+```
+
+**上述步骤已经在/home/data/tmh_project/SCLC/Fig1_sc_mousemodel/Fig1_step2_v1_epi_analysis_250618.rmd中运行过了，本脚本直接运行3开始后的步骤**
+**这里重新开始**
+**这里是新的定义**
+
+3  进行新的注释epi_State，将transforming_A和transforming_B合并为一个cluster--transforming。
+```{r}
+sce_800 <- qs::qread(file = '1_GSE248202_epitheial_FDG_pca800_250618.qs')
+
+output <- 'v2_epi_state'
+dir.create(output)
+
+#sce_800 <- qs::qread(file = '1_GSE248202_epitheial_FDG_pca800_250618.qs')
+Idents(sce_800) <- "RNA_snn_res.2"
+sce_800 <- subset(sce_800,RNA_snn_res.2=='15',invert=T)
+sce_800$RNA_snn_res.2 <- droplevels(sce_800$RNA_snn_res.2)
+
+#celltype分群2.0版本，与之前的1.0版本稍有区别。先看GRN结果。
+sce_800$epi_State <- 'epi_State'
+#c13与另外几个AT2 亚群的GRN的pattern不同，可能是特殊功能的AT2。此处分在一起。
+sce_800$epi_State[sce_800$RNA_snn_res.2 %in% c("1",'6','7','9','10','11','13')] <- "AT2"
+sce_800$epi_State[sce_800$RNA_snn_res.2 %in% c('3')] <- "AT1"
+sce_800$epi_State[sce_800$RNA_snn_res.2 %in% c('2','4','5')] <- "LUAD"
+sce_800$epi_State[sce_800$RNA_snn_res.2 %in% c('0',"8","12")] <- "transforming"
+sce_800$epi_State[sce_800$RNA_snn_res.2 %in% c("14")] <- "SCLC"
+
+sce_800$epi_State <- factor(sce_800$epi_State,
+                           levels = c("AT1",'AT2','LUAD','transforming','SCLC')
+                           )
+qs::qsave(sce_800,file.path(output,'3_v2_epistate_FDG_pca800_epi_GSE248202_250809.qs'))
+
+c4 <- CellDimPlot(sce_800, reduction = "fr",label = F,label_insitu =F,pt.size = 0.01,
+            group.by = "epi_State", raster=FALSE)
+c5 <- CellDimPlot(sce_800, reduction = "fr",label = F,label_insitu =F,pt.size = 0.01,
+                  group.by = "NTstate", raster=FALSE)
+ggsave(plot=c4,file.path(output, '3_DimPlot_v2_epi_State_FDG_pca800.pdf'),width = 4,height = 3)
+ggsave(plot=c5,file.path(output,'3_DimPlot_v2_NTstate_FDG_pca800.pdf'),width = 4,height = 3)
+
+plot1 <- c5|c4
+ggsave(plot=plot1,file.path(output,'3_DimPlot_v2_epistate_FDG_pca800_NTstate.pdf'),width = 8,height =3)
+
+#################矩阵相似性分析，评估不同epi_celltype亚型间的相似性程度。
+ht <- CellCorHeatmap(
+  srt_query = sce_800, srt_ref = sce_800,
+  query_group = "epi_State", ref_group = "epi_State",
+  nlabel = 3, label_by = "row",label_size = 0,column_names_rot = 30,
+  show_row_names = TRUE, show_column_names = TRUE
+)
+print(ht$plot)
+ggsave(plot=ht$plot,file.path(output, '3_CellCorHeatmap_v2_epistate_FDG_pca800.pdf'),width = 5,height = 3.5)
+
+```
+
+4 展示epi_State的markers的分布。
+```{r}
+##单独绘制上皮的markers gene : c('Epcam','Krt19','Krt8')
+cancer_markers <- c( 'Hopx','Ager',#AT1  #'Pdpn'低表达,'Aqp5'在AT1/AT2/LUAD中都高表达
+                    "Sftpa1",'Lamp3', #AT2 #'Sftpa','Lamp3'相对特异的表达在AT2中
+                     "Muc1", 'Krt8', #LUAD。#"Nkx2-1"在LUAD中也有一定表达,'Ceacam5'没有，'Napsa'在transforming中低
+                    'Nusap1','Egfr', #transforming  #'Ttk',
+                    'Ascl1','Dll3'  #SCLC  'Neurod1'表达量低，'Insm1'在transforming和SCLC中都高
+                    )
+
+# 定义对应的 cell type 向量
+cell_types <- c(
+  rep("AT1", 2),
+  rep("AT2", 2),
+  rep("LUAD", 2),
+  rep("transforming", 2),
+  rep("SCLC", 2)
+  #rep("AT2_trans", 14)
+
+)
+
+# 构建 de_top 数据框
+de_top <- data.frame(
+  gene = cancer_markers,
+  group1 = cell_types
+)
+# 绘制热图
+ht1 <- GroupHeatmap(
+  srt = sce_800,
+  features = de_top$gene,
+  feature_split = de_top$group1, 
+  group.by = "epi_State",
+  heatmap_palette = "YlOrRd",
+  cell_annotation = c("G2M.Score"),
+  dot_size = unit(7, "mm"),
+  show_row_names = TRUE, row_names_side = "left",
+  cluster_rows =T,
+  label_size =5,
+  terms_fontsize =6,
+  width = 2,height = 3,
+  add_dot = TRUE, add_reticle = TRUE
+)
+ggsave(file.path(output,'GroupHeatmap_epimarkers_v3_epistate_FDG_pca800_epi_GSE248202.pdf'),ht1$plot,height = 7, width = 7)
+
+```
+
+
+
+
+
+
+
+

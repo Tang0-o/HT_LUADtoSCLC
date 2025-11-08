@@ -1,0 +1,461 @@
+---
+title: "Fig5_step2_DEG_pathway_analysis"
+author: "tang"
+date: "2025-07-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = here::here())
+```
+
+# 差异基因分析和富集通路分析
+
+本脚本对四个数据集进行差异基因分析和富集通路分析：
+- TCGA数据 (FPKM格式)
+- NT数据 (FPKM格式)  
+- OAK数据 (TPM格式)
+- ONCOSG数据 (ZSCORE格式)
+
+## 1. 加载必要的包和函数
+
+```{r load_packages_and_functions}
+# 加载分析函数
+source('Rscripts/52_DEG_pathway_analysis_v2.R')
+
+# 加载必要的包
+load_required_packages()
+```
+
+## 2. 分析TCGA数据
+```{r analyze_tcga}
+# 读取TCGA数据
+exp_tcga <- read.csv('../Fig3_cohort_bulk_human/0_Fig3_cohort_data/1_TCGA_LUAD/LUAD_fpkm_new.csv', row.names = 1)
+clustering_output <- readRDS('../Fig3_cohort_bulk_human/1_TCGA/ssgsea/clustering_output_complete.rds')
+
+# 获取分组标签
+group_labels_tcga <- clustering_output$cluster_results$hierarchical
+
+results_tcga <- run_deg_pathway_analysis(
+  exp_matrix = exp_tcga,
+  group_labels = group_labels_tcga,
+  data_type = "FPKM",
+  dataset_name = "TCGA",
+  output_base_dir = "./2_DEGs_pathway/",
+  target_groups = c("cluster_high", "cluster_low")  # 可选，因为这是默认值
+)
+
+
+# 显示结果摘要
+message("TCGA分析完成")
+message("DEG比较数量: ", length(results_tcga$DEG))
+message("通路分析比较数量: ", length(results_tcga$pathway))
+
+# 显示每个比较的差异基因数量
+for (comp_name in names(results_tcga$DEG)) {
+  deg_data <- results_tcga$DEG[[comp_name]]
+  up_genes <- sum(deg_data$significance == "Up")
+  down_genes <- sum(deg_data$significance == "Down")
+  message(sprintf("%s: 上调基因 %d, 下调基因 %d", comp_name, up_genes, down_genes))
+}
+```
+
+## 3. 分析NT数据
+```{r analyze_nt}
+# 读取NT数据
+exp_nt <- read.csv("/home/data/tmh_project/SCLC/Fig2_NTbulk_human/1_NTbulkdata_E-MTAB-10399/GeneFPKM_new.csv", row.names = 1)
+cluster_nt <- read.csv("/home/data/tmh_project/SCLC/Fig2_NTbulk_human/1_NTbulkdata_E-MTAB-10399/metadata_all_48samples_sorted.csv", row.names = 1)
+
+# 处理NT数据的分组信息
+keep_indices <- which(cluster_nt$group != "C_SCLC")
+cluster_nt <- cluster_nt[keep_indices, ]
+exp_nt <- exp_nt[, rownames(cluster_nt)]
+
+# 按照指定顺序重新排序
+desired_order <- c("T_SCLC", "T_LUAD", "C_LUAD")
+cluster_nt$group <- factor(cluster_nt$group, levels = desired_order)
+cluster_nt <- cluster_nt[order(cluster_nt$group), ]
+exp_nt <- exp_nt[, rownames(cluster_nt)]
+
+# 提取分组标签
+group_labels_nt <- cluster_nt$group
+names(group_labels_nt) <- rownames(cluster_nt)
+
+# 运行差异基因分析和富集通路分析
+results_nt <- run_deg_pathway_analysis(
+  exp_matrix = exp_nt,
+  group_labels = group_labels_nt,
+  data_type = "FPKM",
+  dataset_name = "NT",
+  output_base_dir = "./2_DEGs_pathway/",
+  target_groups = c("T_SCLC", 'C_LUAD')  # 可选，因为这是默认值
+)
+
+# results_nt <- run_deg_pathway_analysis(
+#   exp_matrix = exp_nt,
+#   group_labels = group_labels_nt,
+#   data_type = "FPKM",
+#   dataset_name = "NT",
+#   output_base_dir = "./2_DEGs_pathway/",
+#   target_groups = c("T_LUAD", 'C_LUAD')  # 可选，因为这是默认值
+# )
+# 
+# results_nt <- run_deg_pathway_analysis(
+#   exp_matrix = exp_nt,
+#   group_labels = group_labels_nt,
+#   data_type = "FPKM",
+#   dataset_name = "NT",
+#   output_base_dir = "./2_DEGs_pathway/",
+#   target_groups = c("T_SCLC", 'T_LUAD')  # 可选，因为这是默认值
+# )
+
+
+# 显示结果摘要
+message("NT分析完成")
+message("DEG比较数量: ", length(results_nt$DEG))
+message("通路分析比较数量: ", length(results_nt$pathway))
+
+# 显示每个比较的差异基因数量
+for (comp_name in names(results_nt$DEG)) {
+  deg_data <- results_nt$DEG[[comp_name]]
+  up_genes <- sum(deg_data$significance == "Up")
+  down_genes <- sum(deg_data$significance == "Down")
+  message(sprintf("%s: 上调基因 %d, 下调基因 %d", comp_name, up_genes, down_genes))
+}
+```
+
+## 4. 分析OAK_POPLAR数据
+```{r analyze_oak}
+# 读取OAK数据
+predictions_oak <- readRDS('../Fig3_cohort_bulk_human/3_predictions/OAK_POPLAR/ssgsea/hierarchical/knn/predictions_knn.rds')
+
+# 数据诊断
+message("=== OAK数据诊断 ===")
+message("表达矩阵维度: ", nrow(predictions_oak$expression_matrix), " x ", ncol(predictions_oak$expression_matrix))
+message("分组标签数量: ", length(predictions_oak$class))
+message("分组分布:")
+print(table(predictions_oak$class))
+
+# 检查表达值范围
+message("\n表达值统计:")
+message("最小值: ", min(predictions_oak$expression_matrix, na.rm = TRUE))
+message("最大值: ", max(predictions_oak$expression_matrix, na.rm = TRUE))
+message("NA值数量: ", sum(is.na(predictions_oak$expression_matrix)))
+message("零值比例: ", sum(predictions_oak$expression_matrix == 0) / length(predictions_oak$expression_matrix))
+
+# 提取表达矩阵和分组标签
+exp_oak <- predictions_oak$expression_matrix
+group_labels_oak <- predictions_oak$class
+
+# 运行差异基因分析和富集通路分析，添加详细日志
+results_oak <- run_deg_pathway_analysis(
+  exp_matrix = exp_oak,
+  group_labels = group_labels_oak,
+  data_type = "TPM",
+  dataset_name = "OAK_POPLAR",
+  output_base_dir = "./2_DEGs_pathway/",
+  target_groups = c("cluster_high", "cluster_low")
+)
+
+# 显示结果摘要
+message("\n=== OAK分析结果 ===")
+if (!is.null(results_oak$DEG)) {
+  message("DEG比较数量: ", length(results_oak$DEG))
+  for (comp_name in names(results_oak$DEG)) {
+    deg_data <- results_oak$DEG[[comp_name]]
+    message("\n比较组: ", comp_name)
+    message("总基因数: ", nrow(deg_data))
+    message("上调基因: ", sum(deg_data$significance == "Up"))
+    message("下调基因: ", sum(deg_data$significance == "Down"))
+    message("显著性分布:")
+    print(table(deg_data$significance))
+    
+    # 检查p值分布
+    message("\nP值分布:")
+    message("P值 < 0.05: ", sum(deg_data$P.Value < 0.05, na.rm = TRUE))
+    message("调整后P值 < 0.05: ", sum(deg_data$adj.P.Val < 0.05, na.rm = TRUE))
+    
+    # 检查logFC分布
+    message("\nlogFC分布:")
+    message("绝对值 > 1的基因数: ", sum(abs(deg_data$logFC) > 1, na.rm = TRUE))
+    message("最大logFC: ", max(abs(deg_data$logFC), na.rm = TRUE))
+  }
+} else {
+  message("未找到差异表达基因结果")
+}
+```
+
+## 5. 分析ONCOSG数据
+```{r analyze_oncosg}
+# 读取ONCOSG数据
+predictions_oncosg <- readRDS('../Fig3_cohort_bulk_human/3_predictions/ONCOSG/ssgsea/hierarchical/knn/predictions_knn.rds')
+
+# 数据诊断
+message("=== ONCOSG数据诊断 ===")
+message("表达矩阵维度: ", nrow(predictions_oncosg$expression_matrix), " x ", ncol(predictions_oncosg$expression_matrix))
+message("分组标签数量: ", length(predictions_oncosg$class))
+message("分组分布:")
+print(table(predictions_oncosg$class))
+
+# 检查表达值范围
+message("\n表达值统计:")
+message("最小值: ", min(predictions_oncosg$expression_matrix, na.rm = TRUE))
+message("最大值: ", max(predictions_oncosg$expression_matrix, na.rm = TRUE))
+message("NA值数量: ", sum(is.na(predictions_oncosg$expression_matrix)))
+message("零值比例: ", sum(predictions_oncosg$expression_matrix == 0) / length(predictions_oncosg$expression_matrix))
+
+# 提取表达矩阵和分组标签
+exp_oncosg <- predictions_oncosg$expression_matrix
+group_labels_oncosg <- predictions_oncosg$class
+
+# 运行差异基因分析和富集通路分析，添加详细日志
+results_oncosg <- run_deg_pathway_analysis(
+  exp_matrix = exp_oncosg,
+  group_labels = group_labels_oncosg,
+  data_type = "ZSCORE",
+  dataset_name = "ONCOSG",
+  output_base_dir = "./2_DEGs_pathway/",
+  target_groups = c("cluster_high", "cluster_low")
+)
+
+# 显示结果摘要
+message("\n=== ONCOSG分析结果 ===")
+if (!is.null(results_oncosg$DEG)) {
+  message("DEG比较数量: ", length(results_oncosg$DEG))
+  for (comp_name in names(results_oncosg$DEG)) {
+    deg_data <- results_oncosg$DEG[[comp_name]]
+    message("\n比较组: ", comp_name)
+    message("总基因数: ", nrow(deg_data))
+    message("上调基因: ", sum(deg_data$significance == "Up"))
+    message("下调基因: ", sum(deg_data$significance == "Down"))
+    message("显著性分布:")
+    print(table(deg_data$significance))
+    
+    # 检查p值分布
+    message("\nP值分布:")
+    message("P值 < 0.05: ", sum(deg_data$P.Value < 0.05, na.rm = TRUE))
+    message("调整后P值 < 0.05: ", sum(deg_data$adj.P.Val < 0.05, na.rm = TRUE))
+    
+    # 检查logFC分布
+    message("\nlogFC分布:")
+    message("绝对值 > 1的基因数: ", sum(abs(deg_data$logFC) > 1, na.rm = TRUE))
+    message("最大logFC: ", max(abs(deg_data$logFC), na.rm = TRUE))
+  }
+} else {
+  message("未找到差异表达基因结果")
+}
+```
+
+6 将上述4个data得到的不同富集的通路进行combine生成一个总的文件。
+```{r}
+library(VennDiagram)
+library(gridExtra)
+library(openxlsx)
+library(RColorBrewer)
+
+# 设置工作路径
+work_dir <- "./2_DEGs_pathway/"
+
+# 第一部分：合并各数据库通路结果 ---------------------------------------------------
+message("\n====== 开始合并通路数据 ======")
+
+dataset_dirs <- list.dirs(work_dir, recursive = FALSE, full.names = TRUE)
+
+# 修改后的数据合并部分
+for (dataset_dir in dataset_dirs) {
+  pathway_dir <- file.path(dataset_dir, "pathway")
+  if (!dir.exists(pathway_dir)) next
+  
+  # 安全获取数据集名称
+  dataset_name <- make.names(basename(dataset_dir))
+  
+  # 处理上调通路
+  up_files <- list.files(pathway_dir, pattern = "_up_pathways\\.txt$", full.names = TRUE)
+  up_pathways <- if(length(up_files) > 0) {
+    unique(unlist(lapply(up_files, function(f) {
+      if(file.exists(f)) readLines(f) else character(0)
+    })))
+  } else {
+    character(0)
+  }
+  up_pathways <- as.character(up_pathways)
+  
+  # 处理下调通路
+  down_files <- list.files(pathway_dir, pattern = "_down_pathways\\.txt$", full.names = TRUE)
+  down_pathways <- if(length(down_files) > 0) {
+    unique(unlist(lapply(down_files, function(f) {
+      if(file.exists(f)) readLines(f) else character(0)
+    })))
+  } else {
+    character(0)
+  }
+  down_pathways <- as.character(down_pathways)
+  
+  # 确保写入内容有效
+  tryCatch({
+    writeLines(up_pathways, file.path(pathway_dir, paste0(dataset_name, "_combine_up_pathway.txt")))
+    writeLines(down_pathways, file.path(pathway_dir, paste0(dataset_name, "_combine_down_pathway.txt")))
+  }, error = function(e) {
+    message(sprintf("写入错误：%s", e$message))
+  })
+  
+  message(sprintf("已处理 %s：合并上调通路 %d 条，下调通路 %d 条",
+                  dataset_name, length(up_pathways), length(down_pathways)))
+}
+
+```
+
+7. 创建综合分析报告,得到上述4个data分组比较下的up/down genes，以及韦恩图。
+```{r create_summary}
+source('/home/data/tmh_project/SCLC/Fig5_pathways/Rscripts/53_Venn_DEGs_v1.R')
+```
+
+8 创建综合分析报告,得到上述4个data分组比较下的up/down pathways，以及韦恩图。
+```{r}
+# 整合分析部分
+source('Rscripts/53_Venn_DEGs_v1.R')
+
+# 收集所有数据集的结果
+all_deg_results <- list()
+all_pathway_results <- list()
+
+# TCGA结果
+all_deg_results[["TCGA"]] <- results_tcga$DEG[[1]]
+all_pathway_results[["TCGA"]] <- results_tcga$pathway[[1]]
+
+# NT结果
+all_deg_results[["NT"]] <- results_nt$DEG[[1]]
+all_pathway_results[["NT"]] <- results_nt$pathway[[1]]
+
+# OAK结果
+all_deg_results[["OAK"]] <- results_oak$DEG[[1]]
+all_pathway_results[["OAK"]] <- results_oak$pathway[[1]]
+
+# ONCOSG结果
+all_deg_results[["ONCOSG"]] <- results_oncosg$DEG[[1]]
+all_pathway_results[["ONCOSG"]] <- results_oncosg$pathway[[1]]
+
+# 运行整合分析
+integration_results <- run_integration_analysis(
+  deg_results_list = all_deg_results,
+  pathway_results_list = all_pathway_results,
+  output_base_dir = "./3_integration_results/"
+)
+
+# 打印整合分析结果摘要
+message("\n====== 整合分析结果摘要 ======")
+
+# 共同上调基因
+message(sprintf("\n共同上调基因数量：%d", length(integration_results$up_regulated$common_genes)))
+message("各数据集上调基因数量：")
+print(integration_results$up_regulated$summary_stats)
+
+# 共同下调基因
+message(sprintf("\n共同下调基因数量：%d", length(integration_results$down_regulated$common_genes)))
+message("各数据集下调基因数量：")
+print(integration_results$down_regulated$summary_stats)
+
+# 关键基因分析
+message("\n关键基因分析结果：")
+print(integration_results$key_genes$summary)
+
+# 关键通路分析
+message("\n上调关键通路分析结果：")
+if (!is.null(integration_results$key_pathways$up$summary)) {
+  print(integration_results$key_pathways$up$summary)
+}
+
+message("\n下调关键通路分析结果：")
+if (!is.null(integration_results$key_pathways$down$summary)) {
+  print(integration_results$key_pathways$down$summary)
+}
+
+# 新增：整合通路分析结果
+message("\n====== 整合通路分析结果 ======")
+message("\n上调通路整合分析：")
+if (!is.null(integration_results$integrated_pathways_analysis$up$common_pathways_by_db)) {
+  for (db in names(integration_results$integrated_pathways_analysis$up$common_pathways_by_db)) {
+    common_pathways <- integration_results$integrated_pathways_analysis$up$common_pathways_by_db[[db]]
+    message(sprintf("%s数据库共同上调通路数量：%d", db, length(common_pathways)))
+    if (length(common_pathways) > 0) {
+      message(sprintf("前5个共同通路：%s", paste(head(common_pathways, 5), collapse = ", ")))
+    }
+  }
+}
+
+message("\n下调通路整合分析：")
+if (!is.null(integration_results$integrated_pathways_analysis$down$common_pathways_by_db)) {
+  for (db in names(integration_results$integrated_pathways_analysis$down$common_pathways_by_db)) {
+    common_pathways <- integration_results$integrated_pathways_analysis$down$common_pathways_by_db[[db]]
+    message(sprintf("%s数据库共同下调通路数量：%d", db, length(common_pathways)))
+    if (length(common_pathways) > 0) {
+      message(sprintf("前5个共同通路：%s", paste(head(common_pathways, 5), collapse = ", ")))
+    }
+  }
+}
+
+# 新增：关键通路激活分析结果
+message("\n====== High组关键通路激活分析结果 ======")
+if (!is.null(integration_results$key_pathways_activation)) {
+  activation_summary <- integration_results$key_pathways_activation$summary
+  commonly_activated <- integration_results$key_pathways_activation$commonly_activated
+  highly_activated <- integration_results$key_pathways_activation$highly_activated
+  
+  message(sprintf("发现的关键通路总数：%d", nrow(activation_summary)))
+  message(sprintf("在所有4个数据集中都激活的关键通路：%d", nrow(commonly_activated)))
+  message(sprintf("在3个或以上数据集中激活的关键通路：%d", nrow(highly_activated)))
+  
+  if (nrow(commonly_activated) > 0) {
+    message("\n在所有4个数据集中都激活的关键通路：")
+    for (i in 1:min(10, nrow(commonly_activated))) {
+      message(sprintf("- %s (%s, %s数据库)", 
+                      commonly_activated$Description[i], 
+                      commonly_activated$KeyPattern[i],
+                      commonly_activated$Database[i]))
+    }
+  }
+  
+  if (nrow(highly_activated) > 0) {
+    message("\n在3个或以上数据集中激活的关键通路（前10个）：")
+    for (i in 1:min(10, nrow(highly_activated))) {
+      message(sprintf("- %s (%s, %s数据库, %d个数据集)", 
+                      highly_activated$Description[i], 
+                      highly_activated$KeyPattern[i],
+                      highly_activated$Database[i],
+                      highly_activated$Datasets_Count[i]))
+    }
+  }
+}
+
+message("\n整合分析结果已保存到：./3_integration_results/")
+message("详细结果包括：")
+message("1. DEG韦恩图和共同基因列表")
+message("2. 各数据库通路韦恩图和共同通路列表")
+message("3. 整合所有数据库的通路韦恩图")
+message("4. 关键基因在各数据集中的表现")
+message("5. 关键通路在High组中的激活模式")
+message("6. 热图、柱状图和网络图展示关键通路激活情况")
+message("7. 富集气泡图+分组条形图可视化")
+
+# 新增：富集可视化结果摘要
+message("\n====== 富集可视化结果摘要 ======")
+if (!is.null(integration_results$enrichment_plots)) {
+  if (!is.null(integration_results$enrichment_plots$up)) {
+    message("上调通路富集气泡图已生成")
+  }
+  if (!is.null(integration_results$enrichment_plots$down)) {
+    message("下调通路富集气泡图已生成")
+  }
+  message("富集可视化文件保存位置：./3_integration_results/enrichment_plots/")
+  message("包含文件：")
+  message("- enrichment_bubble_up.pdf: 上调通路气泡图")
+  message("- activation_frequency_bar_up.pdf: 上调通路激活频率条形图")
+  message("- enrichment_bubble_bar_combined_up.pdf: 上调通路组合图")
+  message("- enrichment_bubble_down.pdf: 下调通路气泡图")
+  message("- activation_frequency_bar_down.pdf: 下调通路激活频率条形图")
+  message("- enrichment_bubble_bar_combined_down.pdf: 下调通路组合图")
+  message("- enrichment_analysis_data_up.xlsx: 上调通路详细数据")
+  message("- enrichment_analysis_data_down.xlsx: 下调通路详细数据")
+}
+
+```

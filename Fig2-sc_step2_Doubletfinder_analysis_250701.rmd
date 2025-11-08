@@ -1,0 +1,165 @@
+---
+title: "Fig2_2_Doubletfinder_analysis"
+author: "tang"
+date: "2025-07-01"
+output: html_document
+---
+
+rmd文件内容不能过多，否则会无法打开，Rstudio无法加载。 
+doubletfinder分开出来运行
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = here::here())
+```
+
+接/home/data/tmh_project/SCLC/Fig2_sc_human/Fig2_1_QC_analysis.rmd 继续运行，分脚本，避免内容过多无法加载，引起程序崩溃。
+```{r}
+seu_high <- qs::qread(file.path(output_1,"3_CellCycleScoring_highQC_filtered2_48292_LUAD1W_SCLC3W_norm1W_epi_HLCA_HTAN_LuCA_GSE131907_250526.qs"))
+
+#设置工作路径
+output_2 = "2_doubletfinder"
+dir.create(output_2, showWarnings = FALSE)
+```
+
+#4 **进行doubletfinder**
+4.1 清空环境，加载数据
+```{r}
+library(Seurat)
+library(DoubletFinder)
+library(dplyr)
+library(patchwork)
+library(ggplot2)
+library(qs)
+
+sample_counts <- table(seu_high$sample)
+samples_to_keep <- names(sample_counts[sample_counts > 50])
+
+seu_high <- subset(seu_high, subset = sample %in% samples_to_keep)
+dim(seu_high)
+table(seu_high$paper_ann_1,seu_high$disease)
+
+# 132 → 97个samples
+# 样本细胞数要＞npc数，不然聚类无法运行，会报错
+```
+
+```{r}
+seu.list <- SplitObject(seu_high, split.by = "sample")
+```
+
+4.2 运行doubletfinder流程，先对list中每个sample进行聚类分群，再进行doubletfinder流程。
+```{r}
+# 设置随机种子以确保可重复性
+seed <- 123
+set.seed(seed)
+
+source(file.path(Rscripts_dir,'1_QC_step42_doubletfinder_analysis.R'))
+# 主流程
+# 3. 标准化和聚类
+gc()
+seu.list <- lapply(seu.list, QuickCluster)
+qs::qsave(seu.list, file.path(output_2, "1_filtered3_47402_LUAD1W_SCLC3W_norm1W_epi_HLCA_HTAN_LuCA_GSE131907_250701.qs"))
+```
+
+```{r}
+gc()
+# 4. DoubletFinder分析
+seu.list <- lapply(seu.list, RunDoubletFinder, output_dir = output_2)
+
+# 新增列删除验证
+VerifyCols(seu.list)
+gc()
+# 保存最终结果（修复3：添加路径）
+# 这个list文件在后面一步合并metadata信息后删除，减轻内存压力。若需要直接将单个样本的qs文件读取成list。
+final_path <- file.path(output_2, "1_DF_list_filtered3_47402_LUAD1W_SCLC3W_norm1W_epi_HLCA_HTAN_LuCA_GSE131907_250701.qs")
+qs::qsave(seu.list, final_path)
+gc()
+
+# 5. 结果可视化
+PlotDoubletResults(seu.list, file.path(output_2, "visualization"))
+```
+
+4.3 检查结果，将DF标签整合到seurat对象中
+```{r}
+# 方法：通过细胞名称精确索引，保证跨样本数据整合安全 ----------------------------------
+gc()
+# Step 1 - 生成DF标签列表（保留原始细胞名称）
+doublet_list <- lapply(seu.list, function(obj) {
+  # 生成每样本的标签数据框（必须包含原始cell barcode）
+  df <- data.frame(
+    cell_barcode = colnames(obj),  # 保持原始细胞名称
+    DF_hi.lo = obj$DF_hi.lo,
+    stringsAsFactors = FALSE
+  )
+  return(df)
+})
+
+# Step 2 - 合并所有样本的DF标签信息（保留barcode的全局唯一性）
+combined_doublet_df <- do.call(rbind, doublet_list) %>% 
+  tibble::remove_rownames() %>%  # 清除自动生成的行名
+  tibble::column_to_rownames("cell_barcode") # 设置barcode为行名（关键步骤）
+
+# 安全验证1：确认合并后的数据维度与原对象匹配
+stopifnot(
+  "合并后的细胞数不匹配" = nrow(combined_doublet_df) == ncol(seu_high),
+  "存在重复barcode" = !any(duplicated(rownames(combined_doublet_df)))
+)
+
+# Step 3 - 将DF标签整合到原seu_1_filtered对象
+seu1 <- AddMetaData(
+  object = seu_high,
+  metadata = combined_doublet_df["DF_hi.lo"], # 根据行名自动匹配 
+  col.name = "DF_hi.lo"
+)
+
+# 安全验证2：校验整合后的数据完整性
+check_df <- data.frame(
+  original_cell = colnames(seu1),
+  new_label = seu1$DF_hi.lo,
+  sample = seu1$sample
+)
+
+# 验证各样本标签的一致性（抽样检查）
+set.seed(2023)
+samples_to_check <- sample(unique(seu_high$sample), 3) # 随机抽3个样本验证
+
+check_results <- lapply(samples_to_check, function(samp) {
+  original_labels <- seu.list[[samp]]$DF_hi.lo
+  new_labels <- check_df %>% 
+    filter(sample == samp) %>% 
+    pull(new_label)
+  
+  all(original_labels == new_labels, na.rm = TRUE)
+})
+
+stopifnot(
+  "标签整合存在错误" = all(unlist(check_results))
+)
+
+# 输出统计信息（DEBUG辅助）
+message("\n====== Doublet检测结果总结 ======")
+print(
+  check_df %>% 
+    group_by(sample, new_label) %>% 
+    tally(name = "Cell_Count") %>% 
+    mutate(Pct = round(Cell_Count/sum(Cell_Count)*100, 2))
+)
+
+# Step4（可选）清理中间变量 
+table(seu1$disease,seu1@meta.data[["DF_hi.lo"]])
+rm(doublet_list, combined_doublet_df, check_df, check_results)
+gc()
+
+```
+
+
+```{r}
+# 保存最终结果（修复3：添加路径）
+qs::qsave(seu1, file.path(output_2, "1_markdoublet_filtered3_47402_LUAD1W_SCLC3W_norm1W_epi_HLCA_HTAN_LuCA_GSE131907_250701.qs"))
+```
+
+
+
+
+
+
+

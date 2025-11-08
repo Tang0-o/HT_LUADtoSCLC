@@ -1,0 +1,437 @@
+---
+title: "Fig3_step2_predictions"
+author: "tang"
+date: "2025-08-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = here::here())
+```
+
+```{r}
+source('Rscripts/Fig3_step2_model_prediction.R')
+```
+
+**读取新数据进行预测及可视化**
+3 新加坡ONCOSG队列（169例）
+```{r}
+# 读取新数据和生存数据，只需执行一次
+exp_data <- read.csv("0_Fig3_cohort_data/2_ONCOSG_LUAD/ONCOSG_RSEM_zscores_ref_all.csv", row.names = 1)
+surv_data <- read.csv("0_Fig3_cohort_data/2_ONCOSG_LUAD/ONCOSG_LUAD_os.csv")
+
+# 定义要循环的参数组合
+gsva_method_list <- c("ssgsea" 
+                      #, "gsva", "zscore"
+                      )
+clustering_method_list <- c("hierarchical" 
+                            #, "kmeans", "pam"
+                            )
+method_list <- c( "knn" 
+                  #, "rf", "svm","pca", "graph"
+                 )
+
+# 循环执行所有参数组合
+for (current_gsva in gsva_method_list) {
+  for (current_clustering in clustering_method_list) {
+    for (current_method in method_list) {
+      
+      message(sprintf("\n\n====================================================================="))
+      message(sprintf("Running Prediction: GSVA=%s, Clustering=%s, Method=%s", 
+                      current_gsva, current_clustering, current_method))
+      message(sprintf("=====================================================================\n"))
+      
+      # 使用tryCatch来处理可能发生的错误，避免中断整个循环
+      tryCatch({
+        # 设置输出路径
+        output_base <- file.path("3_predictions", "ONCOSG", current_gsva, current_clustering, current_method)
+        
+        # 预测
+        predictions <- predict_trans_cluster(
+          exp_data = exp_data,
+          gmt_path = "/home/data/tmh_project/SCLC/Fig2_NTbulk_human/regulon13_human_v1.gmt",
+          models_path = "2_models",
+          method = current_method,
+          clustering_method = current_clustering,
+          gsva_method = current_gsva,
+          output_path = output_base
+        )
+        
+        # 如果预测返回为空或无效，则跳过后续步骤
+        if (is.null(predictions) || !is.list(predictions) || is.null(predictions$summary)) {
+          message(sprintf("Prediction did not return a valid result for %s/%s/%s. Skipping.", 
+                          current_gsva, current_clustering, current_method))
+          next
+        }
+        
+        # 绘制预测热图
+        plot_prediction_heatmap(
+          predictions,
+          output_path = output_base
+        )
+        
+        # 绘制生存曲线
+        plot_km_curves(
+          predictions = predictions,
+          surv_data = surv_data,
+          time_col = "futime",
+          status_col = "fustat",
+          sample_col = "SampleID",
+          title = paste("Overall Survival -", toupper(current_gsva), "-", toupper(current_clustering), "-", toupper(current_method)),
+          output_path = output_base
+        )
+        
+        # 模型评估
+        evaluate_predictions_simple(
+          predictions,
+          output_dir = file.path(output_base, "evaluation"),
+          prefix = "model_eval"
+        )
+        
+      }, error = function(e) {
+        # 捕获并打印错误信息，然后继续下一个循环
+        message(sprintf("\n--- ERROR caught for %s/%s/%s ---\nMessage: %s\n-----------------------------------\n",
+                        current_gsva, current_clustering, current_method, e$message))
+      })
+    }
+  }
+}
+
+```
+
+*最终图版这里不运行*
+4 OAK队列 oak_nosquamous
+```{r}
+# 读取数据
+exp_data <- read.csv("0_Fig3_cohort_data/3_OAK_LUAD/OAK_NOS_tpm.csv", row.names = 1)
+surv_data <- read.csv("0_Fig3_cohort_data/3_OAK_LUAD/oak_nosquamous_os_new.csv", row.names = 1)
+
+# 找出共同的样本
+common_samples <- intersect(colnames(exp_data), rownames(surv_data))
+
+# 如果common_samples为空，打印详细信息进行调试
+if(length(common_samples) == 0) {
+  cat("exp_sample_names:\n")
+  print(head(colnames(exp_data)))
+  cat("\nsurv_sample_names:\n")
+  print(head(rownames(surv_data)))
+  stop("没有找到共同的样本")
+}
+
+# 过滤数据
+exp_data_filtered <- exp_data[, common_samples]
+surv_data_filtered <- surv_data[common_samples, ]  
+
+# 确保 surv_data_filtered 的行名顺序与 exp_data_filtered 的列名顺序一致
+surv_data_filtered <- surv_data_filtered[colnames(exp_data_filtered), ]
+
+# 验证顺序是否一致
+if(!all(rownames(surv_data_filtered) == colnames(exp_data_filtered))) {
+  stop("样本顺序不一致")
+}
+
+# 定义要循环的参数组合
+gsva_method_list <- c("ssgsea", "gsva", "zscore")
+clustering_method_list <- c("hierarchical", "kmeans", "pam")
+method_list <- c("rf", "svm", "knn", "pca", "graph")
+
+# 循环执行所有参数组合
+for (current_gsva in gsva_method_list) {
+  for (current_clustering in clustering_method_list) {
+    for (current_method in method_list) {
+      
+      message(sprintf("\n\n====================================================================="))
+      message(sprintf("Running Prediction: GSVA=%s, Clustering=%s, Method=%s", 
+                      current_gsva, current_clustering, current_method))
+      message(sprintf("=====================================================================\n"))
+      
+      # 使用tryCatch来处理可能发生的错误，避免中断整个循环
+      tryCatch({
+        # 设置输出路径
+        output_base <- file.path("3_predictions", "OAK", current_gsva, current_clustering, current_method)
+        
+        # 预测
+        predictions <- predict_trans_cluster(
+          exp_data = exp_data_filtered,
+          gmt_path = "/home/data/tmh_project/SCLC/Fig2_NTbulk_human/regulon13_human_v1.gmt",
+          models_path = "2_models",
+          method = current_method,
+          clustering_method = current_clustering,
+          gsva_method = current_gsva,
+          output_path = output_base
+        )
+        
+        # 如果预测返回为空或无效，则跳过后续步骤
+        if (is.null(predictions) || !is.list(predictions) || is.null(predictions$summary)) {
+          message(sprintf("Prediction did not return a valid result for %s/%s/%s. Skipping.", 
+                          current_gsva, current_clustering, current_method))
+          next
+        }
+        
+        # 绘制预测热图
+        plot_prediction_heatmap(
+          predictions,
+          output_path = output_base
+        )
+        
+        # 绘制生存曲线
+        plot_km_curves(
+          predictions = predictions,
+          surv_data = surv_data_filtered,
+          time_col = "futime",
+          status_col = "fustat",
+          sample_col = "SampleID",
+          title = paste("Overall Survival -", toupper(current_gsva), "-", toupper(current_clustering), "-", toupper(current_method)),
+          output_path = output_base
+        )
+        
+        # 模型评估
+        evaluate_predictions_simple(
+          predictions,
+          output_dir = file.path(output_base, "evaluation"),
+          prefix = "model_eval"
+        )
+        
+      }, error = function(e) {
+        # 捕获并打印错误信息，然后继续下一个循环
+        message(sprintf("\n--- ERROR caught for %s/%s/%s ---\nMessage: %s\n-----------------------------------\n",
+                        current_gsva, current_clustering, current_method, e$message))
+      })
+    }
+  }
+}
+
+```
+
+*最终图版这里不运行*
+5 POPLAR队列 poplar_nosquamous  单独运行的生存分析结果不好。与OAK合并，结果可。见6 OAK_POPLAR合并数据预测结果。
+```{r}
+# 读取数据
+exp_data <- read.csv("0_Fig3_cohort_data/4_poplar_LUAD/POPLAR_NOS_tpm.csv", row.names = 1)
+surv_data <- read.csv("0_Fig3_cohort_data/4_poplar_LUAD/poplar_nosquamous_os_new.csv", row.names = 1)
+
+# 找出共同的样本
+common_samples <- intersect(colnames(exp_data), rownames(surv_data))
+
+# 如果common_samples为空，打印详细信息进行调试
+if(length(common_samples) == 0) {
+  cat("exp_sample_names:\n")
+  print(head(colnames(exp_data)))
+  cat("\nsurv_sample_names:\n")
+  print(head(rownames(surv_data)))
+  stop("没有找到共同的样本")
+}
+
+# 过滤数据
+exp_data_filtered <- exp_data[, common_samples]
+surv_data_filtered <- surv_data[common_samples, ]  
+
+# 确保 surv_data_filtered 的行名顺序与 exp_data_filtered 的列名顺序一致
+surv_data_filtered <- surv_data_filtered[colnames(exp_data_filtered), ]
+
+# 验证顺序是否一致
+if(!all(rownames(surv_data_filtered) == colnames(exp_data_filtered))) {
+  stop("样本顺序不一致")
+}
+
+# 预测
+# 定义要循环的参数组合
+gsva_method_list <- c("ssgsea", "gsva", "zscore")
+clustering_method_list <- c("hierarchical", "kmeans", "pam")
+method_list <- c("rf", "svm", "knn", "pca", "graph")
+
+# 循环执行所有参数组合
+for (current_gsva in gsva_method_list) {
+  for (current_clustering in clustering_method_list) {
+    for (current_method in method_list) {
+      
+      message(sprintf("\n\n====================================================================="))
+      message(sprintf("Running Prediction: GSVA=%s, Clustering=%s, Method=%s", 
+                      current_gsva, current_clustering, current_method))
+      message(sprintf("=====================================================================\n"))
+      
+      # 使用tryCatch来处理可能发生的错误，避免中断整个循环
+      tryCatch({
+        # 设置输出路径
+        output_base <- file.path("3_predictions", "POPLAR", current_gsva, current_clustering, current_method)
+        
+        # 预测
+        predictions <- predict_trans_cluster(
+          exp_data = exp_data_filtered,
+          gmt_path = "/home/data/tmh_project/SCLC/Fig2_NTbulk_human/regulon13_human_v1.gmt",
+          models_path = "2_models",
+          method = current_method,
+          clustering_method = current_clustering,
+          gsva_method = current_gsva,
+          output_path = output_base
+        )
+        
+        # 如果预测返回为空或无效，则跳过后续步骤
+        if (is.null(predictions) || !is.list(predictions) || is.null(predictions$summary)) {
+          message(sprintf("Prediction did not return a valid result for %s/%s/%s. Skipping.", 
+                          current_gsva, current_clustering, current_method))
+          next
+        }
+        
+        # 绘制预测热图
+        plot_prediction_heatmap(
+          predictions,
+          output_path = output_base
+        )
+        
+        # 绘制生存曲线
+        plot_km_curves(
+          predictions = predictions,
+          surv_data = surv_data_filtered,
+          time_col = "futime",
+          status_col = "fustat",
+          sample_col = "SampleID",
+          title = paste("Overall Survival -", toupper(current_gsva), "-", toupper(current_clustering), "-", toupper(current_method)),
+          output_path = output_base
+        )
+        
+        # 模型评估
+        evaluate_predictions_simple(
+          predictions,
+          output_dir = file.path(output_base, "evaluation"),
+          prefix = "model_eval"
+        )
+        
+      }, error = function(e) {
+        # 捕获并打印错误信息，然后继续下一个循环
+        message(sprintf("\n--- ERROR caught for %s/%s/%s ---\nMessage: %s\n-----------------------------------\n",
+                        current_gsva, current_clustering, current_method, e$message))
+      })
+    }
+  }
+}
+
+```
+
+6 OAK_POPLAR合并数据
+```{r}
+# 读取数据
+exp_data <- read.csv("0_Fig3_cohort_data/5_OAK_POPLAR/OAK_POPLAR_NOS_tpm.csv", row.names = 1)
+surv_data <- read.csv("0_Fig3_cohort_data/5_OAK_POPLAR/oak_poplar_nosquamous_os_new.csv", row.names = 1)
+#surv_data$SampleID <- rownames(surv_data)
+
+# 找出共同的样本
+common_samples <- intersect(colnames(exp_data), rownames(surv_data))
+
+# 如果common_samples为空，打印详细信息进行调试
+if(length(common_samples) == 0) {
+  cat("exp_sample_names:\n")
+  print(head(colnames(exp_data)))
+  cat("\nsurv_sample_names:\n")
+  print(head(rownames(surv_data)))
+  stop("没有找到共同的样本")
+}
+
+# 过滤数据
+exp_data_filtered <- exp_data[, common_samples]
+surv_data_filtered <- surv_data[common_samples, ]  
+
+# 确保 surv_data_filtered 的行名顺序与 exp_data_filtered 的列名顺序一致
+surv_data_filtered <- surv_data_filtered[colnames(exp_data_filtered), ]
+
+# 验证顺序是否一致
+if(!all(rownames(surv_data_filtered) == colnames(exp_data_filtered))) {
+  stop("样本顺序不一致")
+}
+
+
+# 定义要循环的参数组合
+gsva_method_list <- c("ssgsea"
+                      #, "gsva", "zscore"
+                      )
+clustering_method_list <- c("hierarchical"
+                            #, "kmeans", "pam"
+                            )
+method_list <- c( "knn"
+                  #, "rf", "svm","pca", "graph"
+                 )
+
+# 循环执行所有参数组合
+for (current_gsva in gsva_method_list) {
+  for (current_clustering in clustering_method_list) {
+    for (current_method in method_list) {
+      
+      message(sprintf("\n\n====================================================================="))
+      message(sprintf("Running Prediction: GSVA=%s, Clustering=%s, Method=%s", 
+                      current_gsva, current_clustering, current_method))
+      message(sprintf("=====================================================================\n"))
+      
+      # 使用tryCatch来处理可能发生的错误，避免中断整个循环
+      tryCatch({
+        # 设置输出路径
+        output_base <- file.path("3_predictions", "OAK_POPLAR", current_gsva, current_clustering, current_method)
+        
+        # 预测
+        predictions <- predict_trans_cluster(
+          exp_data = exp_data,
+          gmt_path = "/home/data/tmh_project/SCLC/Fig2_NTbulk_human/regulon13_human_v1.gmt",
+          models_path = "2_models",
+          method = current_method,
+          clustering_method = current_clustering,
+          gsva_method = current_gsva,
+          output_path = output_base
+        )
+        
+        # 如果预测返回为空或无效，则跳过后续步骤
+        if (is.null(predictions) || !is.list(predictions) || is.null(predictions$summary)) {
+          message(sprintf("Prediction did not return a valid result for %s/%s/%s. Skipping.", 
+                          current_gsva, current_clustering, current_method))
+          next
+        }
+        
+        # 绘制预测热图
+        plot_prediction_heatmap(
+          predictions,
+          output_path = output_base
+        )
+        
+        # 绘制生存曲线
+        plot_km_curves(
+          predictions = predictions,
+          surv_data = surv_data,
+          time_col = "futime",
+          status_col = "fustat",
+          sample_col = "SampleID",
+          title = paste("Overall Survival -", toupper(current_gsva), "-", toupper(current_clustering), "-", toupper(current_method)),
+          output_path = output_base
+        )
+        
+        # 模型评估
+        evaluate_predictions_simple(
+          predictions,
+          output_dir = file.path(output_base, "evaluation"),
+          prefix = "model_eval"
+        )
+        
+      }, error = function(e) {
+        # 捕获并打印错误信息，然后继续下一个循环
+        message(sprintf("\n--- ERROR caught for %s/%s/%s ---\nMessage: %s\n-----------------------------------\n",
+                        current_gsva, current_clustering, current_method, e$message))
+      })
+    }
+  }
+}
+
+```
+
+
+7 对OAK_POPLAR数据中不同风险分型中，化疗和免疫治疗的生成预后进行对比分析。
+```{r}
+source('Rscripts/Fig3_step2_treatment_survival_analysis.R')
+# Example usage:
+analyze_treatment_survival(
+  predictions_file = "3_predictions/OAK_POPLAR/ssgsea/hierarchical/knn/predictions_knn.rds",
+  mpdl3280a_surv_file = "0_Fig3_cohort_data/5_OAK_POPLAR/oak_poplar_nosquamous_MPDL3280A_os_new.csv",
+  docetaxel_surv_file = "0_Fig3_cohort_data/5_OAK_POPLAR/oak_poplar_nosquamous_Docetaxel_os_new.csv",
+  output_dir = "3_predictions/OAK_POPLAR/ssgsea/hierarchical/knn/treatment_survival",
+  method_info = "SSGSEA - HIERARCHICAL - KNN"
+)
+```
+
+
+

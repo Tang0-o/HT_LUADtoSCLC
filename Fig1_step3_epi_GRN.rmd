@@ -1,0 +1,99 @@
+---
+title: "Fig1_step3_epi_GRN"
+author: "tang"
+date: "2025-06-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = here::here())
+```
+
+**以下脚本在/home/data/tmh_project/SCLC/Fig1_sc_mousemodel/epi_GRN路径下epi_GRN.Rproj中运行**
+
+1  生成Meta cell
+Aims:
+降低细胞数，增加数据的信噪比 -> fill the zeros
+加快SCENIC的计算速度
+准备pySCENIC的输入文件:
+1. 基因表达矩阵, meta cell matrix (For grnboost, step1)
+2. 基因表达矩阵, raw count matrix (For AUCell, step3)
+3. TF list, txt文件
+4. 参考文件:
+  (1) motif ranking track (.feather, 二进制文件)
+  (2) motif annotation    (.tbl, txt文件)
+```{r}
+library(spatstat.utils, lib.loc = "/usr/local/lib/R/library")
+library(Seurat)
+library(tidyverse)
+
+source("R/makeMetaCells.R")
+if (!dir.exists("input")) {
+  dir.create("input")
+}
+
+seu <- qs::qread('../3_epicelltype1_FDG_pca800_epi_GSE248202_250618.qs')
+
+# ### 创建meta cell
+mc.mat <-
+  makeMetaCells(
+    seu       = seu,
+    min.cells = 10,
+    reduction = "fr",
+    dims      = 1:2,
+    k.param   = 10,
+    cores     = 10,
+    seed      = 123)
+## 保存结果(meta cell matrix)
+saveRDS(mc.mat, "input/00-1.mc.mat.rds")
+
+## 准备pySCENIC的输入文件
+
+# ## (1) TF list文件
+# motif2tfs <- data.table::fread("../cisTarget_db_new/motifs-v10nr_clust-nr.hgnc-m0.001-o0.0.tbl")
+# TFs <- sort(unique(motif2tfs$gene_name))
+# writeLines(TFs, "../cisTarget_db_new/hsa_hgnc_tfs.txt")
+
+## (2) meta cell matrix (for step1): *.csv or *.loom
+mc.mat <- readRDS("input/00-1.mc.mat.rds")
+## 过滤低表达基因
+mc.mat <- mc.mat$mat
+expr.in.cells <- rowSums(mc.mat > 0)
+mc.mat <- mc.mat[expr.in.cells >= 5, ]
+
+dir.create("input")
+loom <- SCopeLoomR::build_loom(
+  file.name         = "input/mc_mat_for_step1.loom",
+  dgem              = mc.mat,
+  default.embedding = NULL
+)
+loom$close()
+
+## (3) raw count matrix (for step3): *.csv or *.loom
+# scRNAh <- readRDS("../data/hamony_scRNAhrat_annotaion.rds")
+loom <- SCopeLoomR::build_loom(
+  file.name         = "input/raw_count_mat_for_step3.loom",
+  dgem              = seu[["RNA"]]@counts,
+  default.embedding = NULL
+)
+loom$close()
+rm(loom)
+```
+
+2 在bash中运行scenic流程，并对最终结果进行交叉过滤，得到最终gmt文件
+#调用环境
+source /home/data/wjy01/miniconda3/etc/profile.d/conda.sh
+conda activate /home/data/wjy01/miniconda3/envs/pyscenic_env
+cd /home/data/tmh_project/SCLC/Fig1_sc_mousemodel/GRN_v1
+#运行GRN流程，其中的stats_report文件夹结果可以不需要，后面会另外运行
+bash /home/data/tmh_project/SCLC/Fig1_sc_mousemodel/GRN_v1/1_GRN_all_run20_imp_occ_undate.sh
+#得到不同参数下，不同步骤的TF target edge等的数目。"GRN_output/scenic_analysis"
+python 2_scenic_summary.py   
+
+**对20次gmt结果进行整理，至少出现3次的TF,targets至少出现60%，生成新的gmt文件。"GRN_output/scenic_intersection"**
+python 3_GRN_intersection_analysis.py
+**最终得到/home/data/tmh_project/SCLC/Fig1_sc_mousemodel/GRN_v1/GRN_output/scenic_intersection/integrated_regulons.gmt作为最终的gmt文件** 
+
+3 对scenic结果进行可视化，见/home/data/tmh_project/SCLC/Fig1_sc_mousemodel/Fig1_step4_afterscenic.rmd脚本内容
+
+

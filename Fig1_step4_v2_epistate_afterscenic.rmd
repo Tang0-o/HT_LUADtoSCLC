@@ -1,0 +1,544 @@
+---
+title: "Fig1_step4_v2_epistate_afterscenic"
+author: "tang"
+date: "2025-08-09"
+output: html_document
+---
+
+**以下脚本在/home/data/tmh_project/SCLC/Fig1_sc_mousemodel/Fig1_step2_v2_epi_analysis_250809.rmd后继续运行**
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = here::here())
+```
+
+1 加载R包，source相关函数
+```{r}
+library(SingleCellExperiment)
+library(SCP)
+library(Seurat)
+library(tidyverse)
+library(patchwork)
+
+source("/home/data/tmh_project/SCLC/source_global/compute_module_score.R")
+output <- 'v2_epi_state/v2_after_scenic'
+dir.create(output)
+```
+
+2 读取数据，及step3中生成的最终整合的gmt文件（65个TFs）
+```{r}
+#读取数据
+sc <- qs::qread('v2_epi_state/3_v2_epistate_FDG_pca800_epi_GSE248202_250809.qs')
+
+## 导入regulon (gene list)
+regulons <- clusterProfiler::read.gmt("GRN_v1/GRN_output/scenic_intersection/integrated_regulons.gmt")
+## data.frame -> list, list中的每个元素为一个gene set
+rg.names <- unique(regulons$term)
+regulon.list <- lapply(rg.names, function(rg) {
+  subset(regulons, term == rg)$gene
+})
+names(regulon.list) <- sub("[0-9]+g", "\\+", rg.names)
+summary(sapply(regulon.list, length))
+print(regulon.list[1])
+#这种生成regulon list的方案，会去除gtm文件中第二列的内容。后续需要使用新的函数read_write_gmt读取第二列开始即是genes的gmt文件。注意区分，避免漏了靶基因。
+```
+
+3 进行AUCell评分，保存对象到相应文件夹中
+64→60个regulon
+```{r}
+seu <- ComputeModuleScore(sc, gene.sets = regulon.list, min.size = 10, cores = 10)
+#Nfe2l2(+), Runx1(+), Tcf3(+), Tcf7l1(+), Thra(+) 靶基因小于10个，运算中去除。剩余60个TFs
+seu
+seu@assays$AUCell@counts <- seu@assays$AUCell@data
+qs::qsave(seu,file.path(output,"4_60regulon_epistate_FDG_pca800_epi_GSE248202_250809.qs"))
+```
+
+
+4 筛选平均活性 ≥ 0.005 的 regulon
+①.计算每个 regulon 的平均活性
+②.筛选平均活性 ≥ 0.005 的 regulon
+③.创建新的 Seurat 对象 seu_1
+④.可视化并分析筛选后的 regulon 活性
+⑤.打印保留的 regulon 数量
+60 →51个regulon
+```{r}
+# 获取 AUCell 活性矩阵
+auc_matrix <- seu[["AUCell"]]@data
+# 计算每个 regulon 的平均活性
+regulon_mean_activity <- rowMeans(auc_matrix)
+# 筛选平均活性大于0.005的regulon
+high_activity_regulons <- names(regulon_mean_activity[regulon_mean_activity >= 0.005])
+# 提取高活性regulon的活性矩阵
+filtered_auc_matrix <- auc_matrix[high_activity_regulons, ]
+# 创建新的Seurat对象
+seu_1 <- seu
+seu_1[["AUCell"]] <- Seurat::CreateAssayObject(data = filtered_auc_matrix)
+# 后续分析与可视化
+# 按平均活性降序排序
+regulon_mean_activity_sorted <- sort(rowMeans(filtered_auc_matrix), decreasing = TRUE)
+# 打印所有 regulon 的平均活性
+print(regulon_mean_activity_sorted)
+# 可视化 regulon 平均活性分布
+library(ggplot2)
+df_activity <- data.frame(
+  regulon = names(regulon_mean_activity_sorted),
+  mean_activity = regulon_mean_activity_sorted
+)
+
+g1 <- ggplot(df_activity, aes(x = reorder(regulon, mean_activity), y = mean_activity)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Regulon Mean Activity",
+    x = "Regulon",
+    y = "Mean Activity Score"
+  )
+ggsave(file.path(output,'geom_bar_60regulon_meanactivaty.pdf'),g1,width = 7,height = 7)
+
+# 描述性统计
+summary(rowMeans(filtered_auc_matrix))
+# 打印保留的regulon数量
+cat("Retained regulons:", length(high_activity_regulons))
+
+seu_1@assays$AUCell@counts <- seu_1@assays$AUCell@data
+qs::qsave(seu_1,file.path(output,"4_51regulon_epistate_FDG_pca800_epi_GSE248202_250809.qs"))
+
+```
+
+5 在小鼠模型的epi数据中，展示这51个TFs的表达情况的热图。
+```{r}
+DefaultAssay(seu_1) <- 'AUCell'
+ht1 <- GroupHeatmap(
+  srt = seu_1,
+  features = names(regulon.list),
+  group.by = "epi_State",
+  heatmap_palette = "YlOrRd",
+  show_row_names = TRUE, row_names_side = "left",
+  cluster_rows =T,
+  label_size =5,
+  width = 4,height = 7,
+  dot_size = unit(5, "mm"),
+  add_dot = TRUE, add_reticle = TRUE
+)
+print(ht1$plot)
+ggsave(file.path(output,'GroupHeatmap_regulon51_epistate_FDG_pca800_epi_GSE248202.pdf'),ht1$plot,height = 10, width =8)
+
+ht2 <- FeatureHeatmap(
+  srt = seu_1, group.by = "epi_State", features = names(regulon.list),
+  species = "Mus_musculus",
+  height = 7, width = 3,
+  nlabel = 0,
+  label_size = 0,
+  show_row_names = T,
+  cluster_rows =T
+)
+print(ht2$plot)
+ggsave(file.path(output,'FeatureHeatmap_regulon51_epistate_FDG_pca800_epi_GSE248202.pdf'),ht2$plot,height = 8, width =7)
+```
+
+6 对特定epi_State进行组间差异检验，找到转化过程密切相关的regulon list。进一步筛选，进行后续人的数据的验证。
+6.1 生成特定epi_State的绘图矩阵
+```{r}
+seu_2 <- subset(seu_1,epi_State %in% c("AT2",  "LUAD", "transforming", "SCLC"))
+seu_2$epi_State <- droplevels(seu_2$epi_State)
+exp <- t(seu_2@assays$AUCell@counts)
+cluster <- as.data.frame(seu_2@meta.data[,c('epi_State'), drop=FALSE])
+data_regulon51 <-  as.data.frame(cbind(exp,cluster))
+
+# 添加行名作为列
+exp_df <- as.data.frame(exp)
+exp_df$cell <- rownames(exp_df)
+cluster$cell <- rownames(cluster)
+
+# 按照细胞名精确匹配
+data_regulon51 <- merge(exp_df, cluster, by = 'cell')
+rownames(data_regulon51) <- data_regulon51$cell
+data_regulon51$cell <- NULL
+```
+
+6.2 绘制箱线图，对筛选的特定epi_State分组都进行组间差异检验
+levels =c("AT2",  "LUAD", "transforming",  "SCLC")
+```{r}
+# 绘制普通的箱线图
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggsci)
+library(ggpubr)
+
+data <- as.data.frame(data_regulon51)
+# 将前60列的数据从宽格式转换为长格式
+data_long <- data %>%
+  pivot_longer(cols = 1:51, names_to = "Type", values_to = "Expression") %>%
+  select(Type, Expression, epi_State) %>%
+  mutate(Type = factor(Type, levels = colnames(data)[1:51]),
+         group = factor(epi_State, levels = c("AT2",  "LUAD", "transforming",  "SCLC")))
+
+colsp <- c('#FED439FF','#46732EFF','#F05C3BFF','#9370DB','#FF91AF','#FD7446FF','#D5E4A2FF','#197EC0FF','#8A9197FF','#D2AF81FF','#709AE1FF',
+           '#F8D568','#71D0F5FF','#370335FF','#075149FF','#C80813FF','#91331FFF','#1A9993FF','#FD8CC1FF','#FF6700',
+           '#00AD43','#89CFF0','#BA160C','#A6A6A6','#006DB0','#C154C1','#D99A6C','#96C8A2','#FBEC5D')
+
+# 创建颜色映射
+color_map <- c(
+  "AT2" = colsp[1], 
+  "LUAD" = colsp[2], 
+  "transforming" = colsp[3],  
+  "SCLC" = colsp[4]
+)
+
+# comparisons只对比最关注的三个组间差异
+comparisons <- list(
+  c("AT2", "LUAD"),
+  c("LUAD", "transforming"),
+  c("LUAD", "SCLC"),
+  c("transforming", "SCLC")
+)
+
+g1 <- ggplot(data_long, aes(x = group, y = Expression, fill = group)) +
+  geom_boxplot(outlier.colour = "transparent", alpha = 0.7) +
+  facet_wrap(~ Type, scales = 'free_y', ncol = 9) +
+  scale_fill_manual(values = color_map) +
+  scale_color_manual(values = color_map) +
+  theme_classic(base_size = 12) +
+  xlab('Group') +
+  ylab('Expression') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  stat_compare_means(comparisons = comparisons,
+                     method = "t.test",
+                     label = "p.signif",
+                     hide.ns = TRUE,
+                     vjust = 0.6)
+
+ggsave(file.path(output,'geom_boxplot_4celltypes_regulon51_epistate_FDG_pca800_epi_GSE248202.pdf'), g1, width = 18, height = 10)
+```
+**基于上述差异检验的结果，选出感兴趣的regulon。这一步删选得到27个regulon。**
+筛选条件：
+1、TF的target genes ＞10个
+2、Mean Activity Score ＞ 0.005
+3、transforming/SCLC组RAS显著高于AT2/LUAD，有统计学差异
+4、 AT2/LUAD组RAS显著高于transforming/SCLC组，有统计学差异
+5、去除LUAD组RAS低，而其余组均高的regulon
+6、结合差异检验和热图聚类结果，找到转化升高和降低两种pattern的regulons。对于有统计学差异，但是各组具有较高活性评分的去除
+
+转化升高（14个）：
+"Ascl1(+)", "Bhlhe41(+)", "E2f8(+)", "Foxm1(+)","Hdac2(+)",
+ "Irf6(+)", "Myb(+)", "Mybl2(+)", "Myc(+)","Nfyb(+)", 
+"Peg3(+)", "Phf20(+)", "Pknox1(+)", "Tfdp1(+)"
+转化降低(13个）：
+"Cebpb(+)", "Cebpd(+)", "Cux1(+)", "Ehf(+)", "Elf1(+)", 
+"Elf5(+)", "Etv1(+)", "Ing4(+)", "Irx1(+)", "Mafb(+)", 
+"Sox9(+)", "Srebf1(+)", "Zfp467(+)"
+
+7 在小鼠模型的epi数据中，展示这27个regulon的RAS的热图分布情况。
+```{r}
+filtered1 <- c("Ascl1(+)", "Bhlhe41(+)", "E2f8(+)", "Foxm1(+)","Hdac2(+)",
+ "Irf6(+)", "Myb(+)", "Mybl2(+)", "Myc(+)","Nfyb(+)", 
+"Peg3(+)", "Phf20(+)", "Pknox1(+)", "Tfdp1(+)",
+"Cebpb(+)", "Cebpd(+)", "Cux1(+)", "Ehf(+)", "Elf1(+)", 
+"Elf5(+)", "Etv1(+)", "Ing4(+)", "Irx1(+)", "Mafb(+)", 
+"Sox9(+)", "Srebf1(+)", "Zfp467(+)")
+```
+
+```{r}
+library(scRNAtoolVis)
+Idents(seu_2) <- 'epi_State'
+ AverageHeatmap(object = seu_2,assays = "AUCell",
+               markerGene = filtered1,
+               clusterAnnoName = FALSE,
+               width = 4,height = 12,
+               annoCol = TRUE,
+               myanCol = colsp[1:4])
+# ggsave(file.path(output,'AverageHeatmap_regulon27_epistate_FDG_pca800_epi_GSE248202.pdf'),ht3$plot,height = 10, width =8)
+
+```
+
+```{r}
+ht3 <- GroupHeatmap(
+  srt = seu_2,
+  features = filtered1,
+  group.by = "epi_State",
+  heatmap_palette = "YlOrRd",
+  show_row_names = TRUE,
+  row_names_side = "left",
+  #cluster_rows =T,
+  label_size =5,
+  width = 3,height = 6,
+  dot_size = unit(8, "mm"),
+  add_dot = TRUE, add_reticle = TRUE
+)
+print(ht3$plot)
+ggsave(file.path(output,'GroupHeatmap_regulon27_epistate_FDG_pca800_epi_GSE248202.pdf'),ht3$plot,height = 10, width =8)
+
+ht4 <- FeatureHeatmap(
+  srt = seu_2, 
+  group.by = "epi_State",
+  features = filtered1,
+  species = "Mus_musculus",
+  height = 6, width = 3,
+  nlabel = 0,
+  label_size = 0,
+  show_row_names = T
+  #cluster_rows =T
+)
+print(ht4$plot)
+ggsave(file.path(output,'FeatureHeatmap_regulon27_epistate_FDG_pca800_epi_GSE248202.pdf'),ht4$plot,height = 10, width =8)
+```
+
+8 生成只有27个regulon RAS矩阵的seurat对象，绘制其箱线图
+```{r}
+# 获取 AUCell 活性矩阵
+auc_matrix <- seu_2[["AUCell"]]@data
+
+# 筛选指定的 regulon
+filtered_auc_matrix <- auc_matrix[rownames(auc_matrix) %in% filtered1, ]
+
+# 创建新的 Seurat 对象
+seu_3 <- seu_2
+seu_3[["AUCell"]] <- Seurat::CreateAssayObject(data = filtered_auc_matrix)
+
+# 验证结果
+print(rownames(seu_3[["AUCell"]]@data))
+cat("Number of retained regulons:", nrow(seu_3[["AUCell"]]@data))
+seu_3@assays$AUCell@counts <- seu_3@assays$AUCell@data
+qs::qsave(seu_3,file.path(output,"4_27regulon_AUCell_epistate_FDG_pca800_epi_GSE248202_250809.qs"))
+
+```
+绘制27个regulon的RAS的箱线图
+```{r}
+library(ggpubr)
+exp <- t(seu_3@assays$AUCell@data)
+cluster <- as.data.frame(seu_3@meta.data[,c('epi_State'), drop=FALSE])
+data_regulon <-  as.data.frame(cbind(exp,cluster))
+
+# 添加行名作为列
+exp_df <- as.data.frame(exp)
+exp_df$cell <- rownames(exp_df)
+cluster$cell <- rownames(cluster)
+
+# 按照细胞名精确匹配
+data_regulon <- merge(exp_df, cluster, by = 'cell')
+rownames(data_regulon) <- data_regulon$cell
+data_regulon$cell <- NULL
+
+data <- as.data.frame(data_regulon)
+# 将前60列的数据从宽格式转换为长格式
+data_long <- data %>%
+  pivot_longer(cols = 1:27, names_to = "Type", values_to = "Expression") %>%
+  select(Type, Expression, epi_State) %>%
+  mutate(Type = factor(Type, levels = colnames(data)[1:27]),
+         group = factor(epi_State, levels = c("AT2",  "LUAD", "transforming", "SCLC")))
+
+# 创建颜色映射
+color_map <- c(
+  "AT2" = colsp[1], 
+  "LUAD" = colsp[2], 
+  "transforming" = colsp[3],  
+  "SCLC" = colsp[4]
+)
+
+# comparisons只对比最关注的三个组间差异
+comparisons <- list(
+  c("AT2", "LUAD"),
+  c("LUAD", "transforming"),
+  c("LUAD", "SCLC"),
+  c("transforming", "SCLC")
+)
+data_long$Type <- factor(data_long$Type, levels = filtered1)
+g3 <- ggplot(data_long, aes(x = group, y = Expression, fill = group)) +
+  geom_boxplot(
+    outlier.colour = "transparent", 
+    alpha = 0.7,
+    size = 0.3  # 将边框线变细
+  ) +
+  facet_wrap(~ Type, scales = 'free_y', ncol = 3) +
+  scale_fill_manual(values = color_map) +
+  scale_color_manual(values = color_map) +
+  theme_classic(base_size = 12) +
+  xlab('Group') +
+  ylab('Expression') +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.background = element_rect(color = "black", fill = "white", size = 0.3),
+    strip.text = element_text(face = "bold")
+  ) +
+  stat_compare_means(
+    comparisons = comparisons,
+    method = "t.test",
+    label = "p.signif",
+    hide.ns = TRUE,
+    tip.length = 0,
+    bracket.size = 0.3,
+    vjust = 0.6
+  )
+#ggsave(file.path(output,'geom_boxplot_4celltypes_regulon27_epistate_FDG_pca800_epi_GSE248202_n3.pdf'), g3, width = 12, height = 4)
+ggsave(file.path(output,'geom_boxplot_4celltypes_regulon27_epistate_FDG_pca800_epi_GSE248202_n3.pdf'), g3, width =6, height = 10)
+
+```
+
+
+9 生成regulon_27list,并进行保存
+```{r}
+source('../source_global/write_read_gmt.R')
+regulon_27 <- regulon.list[filtered1]
+
+# 验证结果
+str(regulon_27)
+print(names(regulon_27))
+cat("Number of regulons:", length(regulon_27))
+
+write_gmt(regulon_27,file.path('regulon27_mouse_v1.gmt')  )
+```
+
+10 绘制27个regulon的RAS的dimplot分布图
+```{r}
+f1 <- FeatureDimPlot(srt = seu_3, features = filtered1 ,ncol = 9,reduction = "fr", theme_use = "theme_blank")
+ggsave(plot=f1,file.path(output,'FeatureDimPlot_regulon27_epistate_FDG_pca800_epi_GSE248202.pdf'),width = 21,height = 7)
+
+```
+
+11 绘制27个TFs的热图、dimplot分布图
+```{r}
+#查看以上转录因子的表达情况。
+TFs <- c("Ascl1", "Bhlhe41", "E2f8", "Foxm1","Hdac2", "Irf6", "Myb", "Mybl2", "Myc","Nfyb", "Peg3", "Phf20", "Pknox1", "Tfdp1",
+         "Cebpb", "Cebpd", "Cux1", "Ehf", "Elf1", "Elf5", "Etv1", "Ing4", "Irx1", "Mafb","Sox9", "Srebf1", "Zfp467")
+
+DefaultAssay(seu_3) <- 'RNA'
+f2 <- FeatureDimPlot(srt = seu_3, features = TFs ,ncol = 9,reduction = "fr", theme_use = "theme_blank")
+ggsave(plot=f2,file.path(output,'FeatureDimPlot_TF27_epistate_FDG_pca800_epi_GSE248202.pdf'),width = 21,height = 7)
+
+
+ht5 <- GroupHeatmap(
+  srt = seu_3,
+  features = TFs,
+  group.by = "epi_State",
+  heatmap_palette = "YlOrRd",
+  show_row_names = TRUE,
+  row_names_side = "left",
+  #cluster_rows =T,
+  label_size =5,
+  width = 3,height = 5,
+  dot_size = unit(8, "mm"),
+  add_dot = TRUE, add_reticle = TRUE
+)
+print(ht5$plot)
+ggsave(file.path(output,'GroupHeatmap_TF27_epistate_FDG_pca800_epi_GSE248202.pdf'),ht5$plot,height = 7, width =7)
+
+ht6 <- FeatureHeatmap(
+  srt = seu_3, 
+  group.by = "epi_State",
+  features = TFs,
+  species = "Mus_musculus",
+  height = 5, width = 3,
+  nlabel = 0,
+  label_size = 0,
+  show_row_names = T
+  #cluster_rows =T
+)
+print(ht6$plot)
+ggsave(file.path(output,'FeatureHeatmap_TF27_epistate_FDG_pca800_epi_GSE248202.pdf'),ht6$plot,height = 7, width =7)
+
+```
+
+```{r}
+# 提取表达矩阵
+exp <- as.matrix(seu_3@assays$RNA@counts)
+exp <- exp[TFs, ]
+exp <- t(exp)
+
+# 准备数据
+cluster <- as.data.frame(seu_3@meta.data[,c('epi_State'), drop=FALSE])
+exp_df <- as.data.frame(exp)
+exp_df$cell <- rownames(exp_df)
+cluster$cell <- rownames(cluster)
+
+# 合并数据
+data_regulon <- merge(exp_df, cluster, by = 'cell')
+rownames(data_regulon) <- data_regulon$cell
+data_regulon$cell <- NULL
+data <- as.data.frame(data_regulon)
+
+# 转换为长格式
+data_long <- data %>%
+  pivot_longer(cols = 1:27, names_to = "Type", values_to = "Expression") %>%
+  select(Type, Expression, epi_State) %>%
+  mutate(Type = factor(Type, levels = TFs),
+         group = factor(epi_State, levels = c("AT2", "LUAD", "transforming", "SCLC")))
+
+# 颜色映射
+color_map <- c(
+  "AT2" = colsp[1],
+  "LUAD" = colsp[2],
+  "transforming" = colsp[3],  
+  "SCLC" = colsp[4]
+)
+
+# 比较组
+comparisons <- list(
+  c("AT2", "LUAD"),
+  c("LUAD", "transforming"),
+  c("LUAD", "SCLC"),
+  c("transforming", "SCLC")
+)
+
+# 绘图
+g4 <- ggplot(data_long, aes(x = group, y = Expression, fill = group)) +
+  geom_boxplot(
+    outlier.colour = "transparent", 
+    alpha = 1,
+    size = 0.4,
+    width = 0.7
+  ) +
+  facet_wrap(~ Type, scales = 'free_y', ncol = 9) +
+  scale_fill_manual(values = color_map) +
+  scale_color_manual(values = color_map) +
+  theme_classic(base_size = 12) +
+  xlab('Group') +
+  ylab('Expression') +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.text = element_text(size = 11),
+    axis.text = element_text(size = 10),
+    axis.title = element_text(size = 11),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.3)
+  ) +
+  stat_compare_means(
+    comparisons = comparisons,
+    method = "t.test",
+    label = "p.signif",
+    tip.length = 0,
+    hide.ns = TRUE,
+    vjust = 0.7
+  )
+
+# 保存图形
+ggsave(file.path(output,'geom_boxplot_4celltypes_TF27_epistate_FDG_pca800_epi_GSE248202.pdf'), g4, width = 12, height = 4.5)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
